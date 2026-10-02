@@ -6,14 +6,14 @@ A Powerful Bot for Selling VPN Services with Auto Configuration Build.
     <a href="https://t.me/404panel" target="_blank">
         <img src="https://img.shields.io/badge/Telegram-Group-blue?style=flat-square&logo=telegram" alt="Telegram Group"/>
     </a>
-    <a href="https://github.com/TheRealMr404/TheRealBot" target="_blank">
-        <img src="https://img.shields.io/github/stars/TheRealMr404/TheRealBot?style=social" alt="GitHub Stars"/>
+    <a href="https://github.com/TheRealMr404/TheRealBot-Premium" target="_blank">
+        <img src="https://img.shields.io/github/stars/TheRealMr404/TheRealBot-Premium?style=social" alt="GitHub Stars"/>
     </a>
-    <a href="https://img.shields.io/github/forks/TheRealMr404/TheRealBot?style=flat-square" target="_blank">
-        <img src="https://img.shields.io/github/forks/TheRealMr404/TheRealBot?style=flat-square" alt="GitHub Forks"/>
+    <a href="https://img.shields.io/github/forks/TheRealMr404/TheRealBot-Premium?style=flat-square" target="_blank">
+        <img src="https://img.shields.io/github/forks/TheRealMr404/TheRealBot-Premium?style=flat-square" alt="GitHub Forks"/>
     </a>
-    <a href="https://github.com/TheRealMr404/TheRealBot/issues" target="_blank">
-        <img src="https://img.shields.io/github/issues/TheRealMr404/TheRealBot?style=flat-square" alt="GitHub Issues"/>
+    <a href="https://github.com/TheRealMr404/TheRealBot-Premium/issues" target="_blank">
+        <img src="https://img.shields.io/github/issues/TheRealMr404/TheRealBot-Premium?style=flat-square" alt="GitHub Issues"/>
     </a>
 </p>
 
@@ -98,7 +98,7 @@ Ensure you have:
 ### 🔧 Stable Installation
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh && bash install.sh
+curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh && bash install.sh
 ```
 
 Select option **1** to install.
@@ -108,7 +108,7 @@ Select option **1** to install.
 ## 🔄 Updating Bot
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh && bash install.sh
+curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh && bash install.sh
 ```
 
 Select option **Update**.
@@ -118,7 +118,7 @@ Select option **Update**.
 ## ❌ Removing Bot
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh && bash install.sh
+curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh && bash install.sh
 ```
 
 Select option **3**.
@@ -135,4 +135,4 @@ Your support helps keep the project updated and maintained.
 
 ### Contributors
 
-![Contributors](https://contrib.rocks/image?repo=TheRealMr404/TheRealBot)
+![Contributors](https://contrib.rocks/image?repo=TheRealMr404/TheRealBot-Premium)
