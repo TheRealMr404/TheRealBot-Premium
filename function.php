@@ -627,6 +627,9 @@ function updatePaymentMessageId($response, $orderId)
 function nowPayments($payment, $price_amount, $order_id, $order_description)
 {
     global $domainhosts;
+    $callbackBaseUrl = preg_match('#^https?://#i', (string) $domainhosts)
+        ? rtrim((string) $domainhosts, '/')
+        : 'https://' . trim((string) $domainhosts, '/');
     $apinowpayments = select("PaySetting", "*", "NamePay", "marchent_tronseller", "select")['ValuePay'];
     $curl = curl_init();
     curl_setopt_array($curl, array(
@@ -647,7 +650,7 @@ function nowPayments($payment, $price_amount, $order_id, $order_description)
         'price_currency' => 'usd',
         'order_id' => $order_id,
         'order_description' => $order_description,
-        'ipn_callback_url' => "https://" . $domainhosts . "/payment/nowpayment.php"
+        'ipn_callback_url' => $callbackBaseUrl . "/payment/nowpayment.php"
     ]));
 
     $response = curl_exec($curl);
@@ -2303,10 +2306,12 @@ function addFieldToTable($tableName, $fieldName, $defaultValue = null, $datatype
 }
 function outtypepanel($typepanel, $message)
 {
-    global $from_id, $optionMarzban, $optionX_ui_single, $optionhiddfy, $optionalireza, $optionalireza_single, $optionmarzneshin, $option_mikrotik, $optionwg, $options_ui, $optioneylanpanel, $optionibsng, $optionX_ui_tunnel, $optionPasarguard, $optionPasarguardReseller;
+    global $from_id, $optionMarzban, $optionRebecca, $optionX_ui_single, $optionhiddfy, $optionalireza, $optionalireza_single, $optionmarzneshin, $option_mikrotik, $optionwg, $options_ui, $optioneylanpanel, $optionibsng, $optionX_ui_tunnel, $optionPasarguard, $optionPasarguardReseller;
     
     if ($typepanel == "marzban") {
         sendmessage($from_id, $message, $optionMarzban, 'HTML');
+    } elseif ($typepanel == "rebecca") {
+        sendmessage($from_id, $message, $optionRebecca, 'HTML');
     } elseif ($typepanel == "x-ui_single") {
         sendmessage($from_id, $message, $optionX_ui_single, 'HTML');
     } elseif ($typepanel == "hiddify") {
@@ -2822,6 +2827,49 @@ function sendPasarguardWireGuardFiles($panel, $username, $chatId)
     return $sent;
 }
 
+function sendRebeccaSubscriptionFiles($panel, $username, $chatId)
+{
+    if (($panel['type'] ?? '') !== 'rebecca') {
+        return 0;
+    }
+    $userResponse = rebeccaGetUser($panel, $username);
+    if (empty($userResponse['ok']) || !is_array($userResponse['data'] ?? null)) {
+        return 0;
+    }
+
+    $sent = 0;
+    $files = array_slice(rebeccaGetSubscriptionFiles($panel, $userResponse['data']), 0, 10);
+    foreach ($files as $file) {
+        if (empty($file['content']) || empty($file['name'])) {
+            continue;
+        }
+        $temporaryPath = tempnam(sys_get_temp_dir(), 'rb_cfg_');
+        if ($temporaryPath === false || file_put_contents($temporaryPath, $file['content'], LOCK_EX) === false) {
+            if ($temporaryPath !== false) {
+                @unlink($temporaryPath);
+            }
+            continue;
+        }
+        try {
+            $response = telegram('senddocument', [
+                'chat_id' => $chatId,
+                'document' => new CURLFile(
+                    $temporaryPath,
+                    $file['mime'] ?? 'application/octet-stream',
+                    rebeccaSafeFileName($file['name'])
+                ),
+                'caption' => $file['caption'] ?? 'فایل اتصال سرویس شما',
+            ]);
+            if (is_array($response) && !empty($response['ok'])) {
+                $sent++;
+            }
+        } finally {
+            @unlink($temporaryPath);
+        }
+    }
+    return $sent;
+}
+
 function sendMessageService($panel_info, $config, $sub_link, $username_service, $reply_markup, $caption, $invoice_id, $user_id = null, $image = 'images.jpg')
 {
     global $setting, $from_id;
@@ -2876,6 +2924,10 @@ function sendMessageService($panel_info, $config, $sub_link, $username_service, 
     if (($panel_info['type'] ?? '') === 'pasarguard' && ($panel_info['config'] ?? '') === 'onconfig') {
         sendPasarguardWireGuardFiles($panel_info, $username_service, $user_id);
     }
+    if (($panel_info['type'] ?? '') === 'rebecca'
+        && (($panel_info['config'] ?? '') === 'onconfig' || ($panel_info['sublink'] ?? '') === 'onsublink')) {
+        sendRebeccaSubscriptionFiles($panel_info, $username_service, $user_id);
+    }
 }
 function isValidInvitationCode($setting, $fromId, $verfy_status)
 {
@@ -2922,6 +2974,9 @@ function createPayZarinpal($price, $order_id)
 function createPayaqayepardakht($price, $order_id)
 {
     global $domainhosts;
+    $callbackBaseUrl = preg_match('#^https?://#i', (string) $domainhosts)
+        ? rtrim((string) $domainhosts, '/')
+        : 'https://' . trim((string) $domainhosts, '/');
     $merchant_aqayepardakht = select("PaySetting", "ValuePay", "NamePay", "merchant_id_aqayepardakht", "select")['ValuePay'];
     $curl = curl_init();
     curl_setopt_array($curl, array(
@@ -2941,7 +2996,7 @@ function createPayaqayepardakht($price, $order_id)
     curl_setopt($curl, CURLOPT_POSTFIELDS, json_encode([
         'pin' => $merchant_aqayepardakht,
         'amount' => $price,
-        'callback' => $domainhosts . "/payment/aqayepardakht.php",
+        'callback' => $callbackBaseUrl . "/payment/aqayepardakht.php",
         'invoice_id' => $order_id,
     ]));
     $response = curl_exec($curl);
@@ -3374,6 +3429,33 @@ function generatePeriodicReport($title, $start_ts, $end_ts, $time_label = '')
     $start_sql = date('Y-m-d H:i:s', $start_ts);
     $end_sql = date('Y-m-d H:i:s', $end_ts);
 
+    // service_other.time has historically been saved both as a Unix timestamp
+    // and as Y/m/d H:i:s or Y-m-d H:i:s. Normalize it inside the report query
+    // so old records remain visible in date-range reports.
+    $mixedDateRangeSql = static function (string $column): string {
+        return "(
+            (
+                TRIM({$column}) REGEXP '^[0-9]{9,10}$'
+                AND CAST(TRIM({$column}) AS UNSIGNED) BETWEEN :s_ts AND :e_ts
+            )
+            OR
+            (
+                TRIM({$column}) REGEXP '^[0-9]{13}$'
+                AND FLOOR(CAST(TRIM({$column}) AS UNSIGNED) / 1000) BETWEEN :s_ts_ms AND :e_ts_ms
+            )
+            OR
+            (
+                TRIM({$column}) NOT REGEXP '^[0-9]{9,10}$|^[0-9]{13}$'
+                AND COALESCE(
+                    STR_TO_DATE(TRIM({$column}), '%Y/%m/%d %H:%i:%s'),
+                    STR_TO_DATE(TRIM({$column}), '%Y-%m-%d %H:%i:%s'),
+                    STR_TO_DATE(TRIM({$column}), '%Y/%m/%d'),
+                    STR_TO_DATE(TRIM({$column}), '%Y-%m-%d')
+                ) BETWEEN :s_sql AND :e_sql
+            )
+        )";
+    };
+
     try {
         // ۱. سفارش‌های اولیه (خرید کانفیگ جدید)
         $sql_order = "SELECT COUNT(*) AS count, SUM(CAST(price_product AS UNSIGNED)) AS sum 
@@ -3397,22 +3479,22 @@ function generatePeriodicReport($title, $start_ts, $end_ts, $time_label = '')
         $count_test = (int)($stmt->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 
         // تابع کمکی برای خواندن از جدول service_other
-        $fetchServiceOther = function ($type, $extra_where = '') use ($pdo, $start_ts, $end_ts, $start_sql, $end_sql) {
+        $fetchServiceOther = function ($type, $extra_where = '') use ($pdo, $start_ts, $end_ts, $start_sql, $end_sql, $mixedDateRangeSql) {
+            $dateCondition = $mixedDateRangeSql('time');
             $sql = "SELECT COUNT(*) AS count, SUM(CAST(price AS UNSIGNED)) AS sum 
                     FROM service_other 
                     WHERE type = :type 
-                    AND (
-                        (time BETWEEN :s_sql AND :e_sql) 
-                        OR (CAST(time AS UNSIGNED) BETWEEN :s_ts AND :e_ts)
-                    ) 
+                    AND {$dateCondition}
                     {$extra_where}";
             $stmt = $pdo->prepare($sql);
             $stmt->execute([
                 ':type'  => $type,
                 ':s_sql' => $start_sql,
                 ':e_sql' => $end_sql,
-                ':s_ts'  => $start_ts,
-                ':e_ts'  => $end_ts
+                ':s_ts'    => $start_ts,
+                ':e_ts'    => $end_ts,
+                ':s_ts_ms' => $start_ts,
+                ':e_ts_ms' => $end_ts
             ]);
             $row = $stmt->fetch(PDO::FETCH_ASSOC);
             return [(int)($row['count'] ?? 0), (float)($row['sum'] ?? 0)];
@@ -3436,20 +3518,20 @@ function generatePeriodicReport($title, $start_ts, $end_ts, $time_label = '')
         $count_users = (int)($stmt_user->fetch(PDO::FETCH_ASSOC)['count'] ?? 0);
 
         // ۸. ورودی درگاه‌های پرداخت با ستون دقیق time
+        $paymentDateCondition = $mixedDateRangeSql('time');
         $sql_pay = "SELECT COUNT(id) AS count, SUM(CAST(price AS UNSIGNED)) AS sum 
                     FROM Payment_report 
                     WHERE payment_Status = 'paid' 
-                    AND (
-                        (time BETWEEN :s_sql AND :e_sql) 
-                        OR (CAST(time AS UNSIGNED) BETWEEN :s_ts AND :e_ts)
-                    )
+                    AND {$paymentDateCondition}
                     AND Payment_Method NOT IN ('add balance by admin', 'low balance by admin')";
         $stmt_pay = $pdo->prepare($sql_pay);
         $stmt_pay->execute([
             ':s_ts'  => $start_ts,
             ':e_ts'  => $end_ts,
             ':s_sql' => $start_sql,
-            ':e_sql' => $end_sql
+            ':e_sql' => $end_sql,
+            ':s_ts_ms' => $start_ts,
+            ':e_ts_ms' => $end_ts
         ]);
         $res_pay = $stmt_pay->fetch(PDO::FETCH_ASSOC);
         $count_pay = (int)($res_pay['count'] ?? 0);
