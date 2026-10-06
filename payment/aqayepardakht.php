@@ -20,41 +20,15 @@ use Endroid\QrCode\Writer\PngWriter;
 $ManagePanel = new ManagePanel();
 
 $invoice_id = htmlspecialchars($_POST['invoice_id'] ?? '', ENT_QUOTES, 'UTF-8');
-if (!preg_match('/^[A-Fa-f0-9]{10,64}$/', $invoice_id)) {
-    http_response_code(400);
-    exit('Invalid invoice');
-}
-$transactionId = trim((string) ($_POST['transid'] ?? ''));
-if ($transactionId === '' || strlen($transactionId) > 200 || preg_match('/[\x00-\x20\x7F]/', $transactionId)) {
-    http_response_code(400);
-    exit('Invalid transaction');
-}
 $setting = select("setting", "*");
+$PaySetting = select("PaySetting", "ValuePay", "NamePay", "merchant_id_aqayepardakht","select")['ValuePay'];
 $Payment_report_row = select("Payment_report", "*", "id_order", $invoice_id,"select");
 if (!$Payment_report_row) {
     http_response_code(404);
     exit('Payment not found');
 }
-if (($Payment_report_row['Payment_Method'] ?? '') !== 'aqayepardakht') {
-    http_response_code(400);
-    exit('Invalid payment method');
-}
-$resellerOwner = resellerPaymentOwnerData($Payment_report_row);
-if (!empty($Payment_report_row['bottype'])) {
-    if (!$resellerOwner) {
-        http_response_code(404);
-        exit('Reseller bot not found');
-    }
-    $PaySetting = trim((string) $resellerOwner['settings']['payment_gateways']['aqayepardakht']['pin']);
-} else {
-    $PaySetting = (string) (select("PaySetting", "ValuePay", "NamePay", "merchant_id_aqayepardakht", "select")['ValuePay'] ?? '');
-}
-if ($PaySetting === '') {
-    http_response_code(503);
-    exit('Payment gateway is not configured');
-}
 if (!empty($Payment_report_row['bottype'])
-    && !hash_equals((string) ($Payment_report_row['dec_not_confirmed'] ?? ''), $transactionId)) {
+    && !hash_equals((string) ($Payment_report_row['dec_not_confirmed'] ?? ''), (string) ($_POST['transid'] ?? ''))) {
     http_response_code(400);
     exit('Invalid transaction');
 }
@@ -85,7 +59,7 @@ foreach ($datatxtbot as $item) {
 $data = [
 'pin'    => $PaySetting,
 'amount'    => $Payment_report,
-'transid' => $transactionId,
+'transid' => $_POST['transid'],
 ];
 $data = json_encode($data);
 $ch = curl_init('https://panel.aqayepardakht.ir/api/v2/verify');
@@ -111,7 +85,7 @@ if ($resultCode == "1" || ($resultCode == "2" && !empty($Payment_report_row['bot
     $textbotlang = languagechange('../text.json');
     if (!empty($Payment_report['bottype'])) {
         $resellerResult = resellerCompleteOnlinePayment($invoice_id, 'آقای پرداخت', [
-            'شماره تراکنش' => $transactionId,
+            'شماره تراکنش' => $_POST['transid'] ?? '',
         ]);
         if (!$resellerResult['ok']) {
             $payment_status = 'خطا در ثبت پرداخت';

@@ -504,12 +504,16 @@ function telegramProductsShowHome()
             $category['button_emoji_id']
         )];
     }
+    if (function_exists('telegramFragmentAddHomeButton')) {
+        telegramFragmentAddHomeButton($rows);
+    }
     $rows[] = [['text' => 'سفارش‌های من', 'callback_data' => 'tgp_orders', 'style' => 'primary']];
     $rows[] = [['text' => 'بازگشت به منوی اصلی', 'callback_data' => 'tgp_main', 'style' => 'danger']];
 
     $text = '<b>' . telegramProductsSafeCustomText(telegramProductsSetting('store_title', telegramProductsButtonText())) . "</b>\n\n";
     $text .= telegramProductsSafeCustomText(telegramProductsSetting('home_text', 'دسته موردنظر را انتخاب کنید.'));
-    if (!$categories) {
+    $fragmentEnabled = function_exists('telegramFragmentSetting') && telegramFragmentSetting('enabled', '0') === '1';
+    if (!$categories && !$fragmentEnabled) {
         $text = '<b>' . telegramProductsSafeCustomText(telegramProductsSetting('store_title', telegramProductsButtonText())) . "</b>\n\nدر حال حاضر محصول فعالی ثبت نشده است.";
     }
 
@@ -1094,6 +1098,9 @@ function telegramProductsHandleRequestInternal()
     if ($isFeatureStep && $datain !== '' && !$isFeatureContinuation) {
         step('home', $from_id);
         $user['step'] = 'home';
+    }
+    if (function_exists('telegramFragmentHandleUserRequest') && telegramFragmentHandleUserRequest()) {
+        return true;
     }
     if (function_exists('telegramProductsFeatureUserHandle') && telegramProductsFeatureUserHandle()) {
         return true;

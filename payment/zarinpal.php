@@ -21,33 +21,12 @@ $ManagePanel = new ManagePanel();
 
 $Authority = htmlspecialchars($_GET['Authority'] ?? '', ENT_QUOTES, 'UTF-8');
 $StatusPayment = htmlspecialchars($_GET['Status'] ?? '', ENT_QUOTES, 'UTF-8');
-if (!preg_match('/^[A-Za-z0-9_-]{10,100}$/', $Authority)) {
-    http_response_code(400);
-    exit('Invalid authority');
-}
 $setting = select("setting", "*");
+$PaySetting = select("PaySetting", "ValuePay", "NamePay", "merchant_zarinpal","select")['ValuePay'];
 $Payment_reports = select("Payment_report", "*", "dec_not_confirmed", $Authority,"select");
 if (!$Payment_reports) {
     http_response_code(404);
     exit('Payment not found');
-}
-if (($Payment_reports['Payment_Method'] ?? '') !== 'zarinpal') {
-    http_response_code(400);
-    exit('Invalid payment method');
-}
-$resellerOwner = resellerPaymentOwnerData($Payment_reports);
-if (!empty($Payment_reports['bottype'])) {
-    if (!$resellerOwner) {
-        http_response_code(404);
-        exit('Reseller bot not found');
-    }
-    $PaySetting = trim((string) $resellerOwner['settings']['payment_gateways']['zarinpal']['merchant_id']);
-} else {
-    $PaySetting = (string) (select("PaySetting", "ValuePay", "NamePay", "merchant_zarinpal", "select")['ValuePay'] ?? '');
-}
-if ($PaySetting === '') {
-    http_response_code(503);
-    exit('Payment gateway is not configured');
 }
 $price = $Payment_reports['price'];
 $invoice_id = $Payment_reports['id_order'];

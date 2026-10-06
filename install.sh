@@ -214,7 +214,7 @@ _link_mirza() {
 function self_update_script() {
     local MASTER_PATH="/root/install.sh"
     local BIN_LINK="/usr/local/bin/mirza"
-    local URL="https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh"
+    local URL="https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh"
     local TEMP_FILE="/tmp/mirzabot_update.sh"
 
     # Make sure DNS works before reaching GitHub
@@ -283,7 +283,7 @@ function self_update_script() {
 # ── Repo / paths ─────────────────────────────────────────────
 BOT_DIR_DEFAULT="/var/www/html/mirzaprobotconfig"
 CONFIG_FILE_DEFAULT="$BOT_DIR_DEFAULT/config.php"
-GIT_REPO="TheRealMr404/TheRealBot-Premium"
+GIT_REPO="TheRealMr404/TheRealBot"
 LATEST_CACHE="/tmp/.mirza_latest_version"
 IP_CACHE="/tmp/.mirza_server_ip"
 
@@ -300,7 +300,7 @@ install_bot_auto_updater() {
 #!/bin/bash
 set -Eeuo pipefail
 
-ZIP_URL="https://github.com/TheRealMr404/TheRealBot-Premium/archive/refs/heads/main.zip"
+ZIP_URL="https://github.com/TheRealMr404/TheRealBot/archive/refs/heads/main.zip"
 WEB_ROOT="/var/www/html"
 
 for cmd in awk basename curl cut dirname find flock grep php readlink rsync sha256sum tar tr unzip; do
@@ -512,6 +512,14 @@ php -l "$BOT_DIR/index.php" >/dev/null 2>&1 || {
 
 apache2ctl configtest >/dev/null 2>&1
 systemctl reload apache2
+
+# Keep the local Fragment signer in sync after an admin-panel update. The
+# installer is idempotent and allocates a separate local port per database.
+if [ -x "$BOT_DIR/services/fragment-signer/install-service.sh" ]; then
+    DB_NAME="$(php -r 'require $argv[1]; echo preg_replace("/[^A-Za-z0-9_.-]/", "", (string) $dbname);' "$BOT_DIR/config.php" 2>/dev/null || true)"
+    [ -n "$DB_NAME" ] || DB_NAME=VpnBot
+    "$BOT_DIR/services/fragment-signer/install-service.sh" "$BOT_DIR" "$DB_NAME" >/dev/null
+fi
 
 DEPLOY_STARTED=0
 
@@ -1113,7 +1121,6 @@ DOCKER_INSTANCES="$DOCKER_ROOT/instances"
 DOCKER_BACKUPS="$DOCKER_ROOT/backups"
 DOCKER_GATEWAY="$DOCKER_ROOT/gateway"
 DOCKER_NETWORK="mirza-gateway"
-CONTROL_PANEL_ROOT="${MIRZA_PANEL_ROOT:-/opt/mirza-control-panel}"
 
 valid_bot_slug() { [[ "$1" =~ ^[a-z][a-z0-9-]{1,30}$ ]]; }
 
@@ -1360,9 +1367,8 @@ EOF
 }
 
 docker_refresh_gateway() {
-    local tmp env_file slug domain port edge_network found=0 gateway_mode panel_env panel_domain panel_port
+    local tmp env_file slug domain port edge_network found=0 gateway_mode
     mkdir -p "$DOCKER_GATEWAY"
-    panel_env="$CONTROL_PANEL_ROOT/.env"
     gateway_mode=$(cat "$DOCKER_GATEWAY/mode" 2>/dev/null || printf 'direct')
     if [ "$gateway_mode" = "apache" ]; then
         for env_file in "$DOCKER_INSTANCES"/*/.env; do
@@ -1378,18 +1384,6 @@ docker_refresh_gateway() {
                 return 1
             }
         done
-        if [ -f "$panel_env" ]; then
-            panel_domain=$(docker_env_value PANEL_DOMAIN "$panel_env")
-            panel_port=$(docker_env_value APP_PORT "$panel_env")
-            validate_domain "$panel_domain" || { echo "Invalid control-panel domain."; return 1; }
-            [[ "$panel_port" =~ ^18[0-9]{3}$ ]] || { echo "Invalid control-panel port."; return 1; }
-            docker_configure_apache_route "control-panel" "$panel_domain" "$panel_port" || {
-                echo "Apache/SSL route setup failed for the control panel."
-                return 1
-            }
-        else
-            [ -f /etc/apache2/sites-available/mirza-docker-control-panel.conf ] && docker_remove_apache_route "control-panel"
-        fi
         return 0
     fi
     tmp=$(mktemp "$DOCKER_GATEWAY/Caddyfile.XXXXXX") || return 1
@@ -1416,27 +1410,6 @@ $domain {
 
 EOF
     done
-    if [ -f "$panel_env" ]; then
-        panel_domain=$(docker_env_value PANEL_DOMAIN "$panel_env")
-        if validate_domain "$panel_domain"; then
-            found=1
-            cat >> "$tmp" <<EOF
-$panel_domain {
-    encode zstd gzip
-    reverse_proxy mirza-control-panel:80 {
-        header_up X-Real-IP {http.request.remote.host}
-        header_up X-Forwarded-For {http.request.remote.host}
-    }
-    header {
-        -Server
-        X-Content-Type-Options nosniff
-        Referrer-Policy no-referrer
-    }
-}
-
-EOF
-        fi
-    fi
     if [ "$found" -eq 0 ]; then
         printf ':80 {\n    respond "Mirza gateway is ready" 200\n}\n' > "$tmp"
     fi
@@ -1452,9 +1425,6 @@ EOF
         docker network inspect "$edge_network" >/dev/null 2>&1 || continue
         docker network connect "$edge_network" mirza-gateway >/dev/null 2>&1 || true
     done
-    if [ -f "$panel_env" ] && docker network inspect mirza-control-edge >/dev/null 2>&1; then
-        docker network connect mirza-control-edge mirza-gateway >/dev/null 2>&1 || true
-    fi
     docker exec mirza-gateway caddy reload --config /etc/caddy/Caddyfile >/dev/null 2>&1 \
         || docker restart mirza-gateway >/dev/null
 }
@@ -1510,9 +1480,10 @@ docker_fetch_source() {
 
 docker_write_instance_files() {
     local dir="$1" slug="$2" domain="$3" token="$4" admin_id="$5" bot_name="$6"
-    local db_user="$7" db_pass="$8" db_root_pass="$9" app_port="${10}" source_url
+    local db_user="$7" db_pass="$8" db_root_pass="$9" app_port="${10}" source_url signer_token
     [[ "$app_port" =~ ^19[0-9]{3}$ ]] || return 1
     source_url=$(docker_source_url)
+    signer_token=$(openssl rand -hex 32)
 
     cat > "$dir/.env" <<EOF
 COMPOSE_PROJECT_NAME=mirza_$slug
@@ -1527,6 +1498,7 @@ DB_USER=$db_user
 DB_PASSWORD=$db_pass
 DB_ROOT_PASSWORD=$db_root_pass
 SOURCE_URL=$source_url
+SIGNER_TOKEN=$signer_token
 EOF
     chmod 600 "$dir/.env"
 
@@ -1568,11 +1540,11 @@ EOF
 FROM php:8.2-apache
 ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    cron curl unzip rsync sudo ca-certificates git util-linux \
+    cron curl unzip rsync sudo ca-certificates git util-linux sqlite3 libsqlite3-dev \
     libcurl4-openssl-dev libfreetype6-dev libicu-dev libjpeg62-turbo-dev \
     libonig-dev libpng-dev libssh2-1-dev libxml2-dev libzip-dev \
     && docker-php-ext-configure gd --with-freetype --with-jpeg \
-    && docker-php-ext-install -j"$(nproc)" mysqli pdo_mysql mbstring zip gd curl intl xml bcmath soap \
+    && docker-php-ext-install -j"$(nproc)" mysqli pdo_mysql pdo_sqlite mbstring zip gd curl intl xml bcmath soap \
     && printf '\n' | pecl install ssh2-1.4.1 \
     && docker-php-ext-enable ssh2 \
     && a2enmod rewrite headers expires \
@@ -1586,8 +1558,28 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 COPY container-update.sh /usr/local/sbin/therealbot-update
 RUN chmod 0750 /usr/local/sbin/therealbot-update
 WORKDIR /var/www/html
-CMD ["sh", "-c", "cron && exec apache2-foreground"]
+CMD ["sh", "-c", "printf '* * * * * www-data /usr/bin/flock -n /run/lock/mirza-fragment.lock php /var/www/html/cronbot/fragment_orders.php >/dev/null 2>&1\\n' > /etc/cron.d/mirza-fragment && chmod 0644 /etc/cron.d/mirza-fragment && cron && exec apache2-foreground"]
 EOF
+
+    cat > "$dir/Signer.Dockerfile" <<'EOF'
+FROM node:20-bookworm-slim
+WORKDIR /srv/signer
+COPY app/services/fragment-signer/package*.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+COPY app/services/fragment-signer/server.js ./server.js
+CMD ["node", "server.js"]
+EOF
+
+    cat > "$dir/fragment-signer.env" <<EOF
+SIGNER_TOKEN=$signer_token
+MIRZA_FRAGMENT_SIGNER_URL=http://signer:8787
+MIRZA_FRAGMENT_DATA_DIR=/var/lib/mirza-fragment/php-data
+EOF
+    chown root:33 "$dir/fragment-signer.env" 2>/dev/null || true
+    chmod 0640 "$dir/fragment-signer.env"
+    mkdir -p "$dir/fragment-signer-data" "$dir/fragment-php-data/VpnBot"
+    chown -R 1000:1000 "$dir/fragment-signer-data" 2>/dev/null || true
+    chown -R 33:33 "$dir/fragment-php-data" 2>/dev/null || true
 
     cat > "$dir/container-update.sh" <<'EOF'
 #!/bin/bash
@@ -1677,13 +1669,20 @@ services:
     environment:
       MIRZA_DOCKER_INSTANCE: \${BOT_SLUG}
       MIRZA_SOURCE_URL: \${SOURCE_URL}
+      MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787
+      MIRZA_FRAGMENT_DATA_DIR: /var/lib/mirza-fragment/php-data
+      SIGNER_TOKEN: \${SIGNER_TOKEN}
     volumes:
       - ./app:/var/www/html
       - ./updater-backups:/var/backups/therealbot
+      - ./fragment-php-data:/var/lib/mirza-fragment/php-data
+      - ./fragment-signer.env:/etc/mirza/fragment-signer-VpnBot.env:ro
     ports:
       - "127.0.0.1:\${APP_PORT}:80"
     depends_on:
       db:
+        condition: service_healthy
+      signer:
         condition: service_healthy
     networks:
       - internal
@@ -1694,6 +1693,35 @@ services:
       timeout: 8s
       retries: 5
       start_period: 40s
+    logging:
+      options:
+        max-size: "10m"
+        max-file: "3"
+  signer:
+    image: mirza-$slug-fragment-signer:local
+    build:
+      context: .
+      dockerfile: Signer.Dockerfile
+    container_name: mirza-$slug-fragment-signer
+    restart: unless-stopped
+    environment:
+      SIGNER_TOKEN: \${SIGNER_TOKEN}
+      HOST: 0.0.0.0
+      PORT: 8787
+      STATE_FILE: /data/state.json
+      CONFIG_FILE: /data/signer-config.json
+      TOKEN_FILE: /data/signer-token.txt
+    volumes:
+      - ./fragment-signer-data:/data
+    networks:
+      - internal
+      - edge
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
     logging:
       options:
         max-size: "10m"
@@ -1735,7 +1763,7 @@ docker_prompt_slug() {
 }
 
 docker_bot_add() {
-    local slug domain token admin_id bot_name dir db_user db_pass db_root_pass app_port schedule answer webhook_response token_file
+    local slug domain token admin_id bot_name dir db_user db_pass db_root_pass app_port schedule answer webhook_response
     docker_install_engine || { echo "Docker gateway setup failed."; return 1; }
 
     slug="${ARG_ID:-}"
@@ -1759,12 +1787,6 @@ docker_bot_add() {
     fi
 
     token="${ARG_TOKEN:-}"
-    token_file="${ARG_TOKEN_FILE:-}"
-    if [ -n "$token_file" ]; then
-        token_file=$(readlink -f -- "$token_file" 2>/dev/null) || { echo "Invalid --token-file path."; return 1; }
-        [ -f "$token_file" ] && [ ! -L "$token_file" ] || { echo "Telegram token file was not found."; return 1; }
-        token=$(head -n 1 -- "$token_file" | tr -d '\r\n')
-    fi
     [ -n "$token" ] || { printf "Telegram bot token: "; read -rs token; echo; }
     validate_token "$token"; case $? in
         0) ;;
@@ -2041,7 +2063,7 @@ docker_bot_update() {
     cp "$config_backup" "$dir/app/config.php"
     chown -R 33:33 "$dir/app"
     rm -rf "$temp_dir"
-    docker_compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --build --force-recreate app || {
+    docker_compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --build --force-recreate signer app || {
         echo "Update failed; restoring the pre-update backup."
         docker_bot_restore "$slug" "$backup_path" >/dev/null || echo "Automatic rollback failed. Restore manually from: $backup_path"
         return 1
@@ -2168,73 +2190,6 @@ docker_manager_menu() {
     done
 }
 
-control_panel_execute() {
-    local action="${1:-install}" script_dir installer temp_dir archive extracted
-    local -a panel_args
-    script_dir=$(dirname "$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null)")
-    installer="$script_dir/control-panel/install.sh"
-
-    if [ "$action" = "install" ]; then
-        docker_install_engine || return 1
-    fi
-
-    if [ "$action" != "install" ] && [ -f "$CONTROL_PANEL_ROOT/source/install.sh" ]; then
-        installer="$CONTROL_PANEL_ROOT/source/install.sh"
-    elif [ ! -f "$installer" ]; then
-        temp_dir=$(mktemp -d /tmp/mirza-control-panel.XXXXXX) || return 1
-        archive="$temp_dir/source.zip"
-        curl -fL --retry 3 --connect-timeout 15 --max-time 240 \
-            "https://github.com/$GIT_REPO/archive/refs/heads/main.zip" -o "$archive" \
-            || { rm -rf "$temp_dir"; echo "Failed to download the control-panel source."; return 1; }
-        unzip -q "$archive" -d "$temp_dir/extracted" \
-            || { rm -rf "$temp_dir"; echo "Failed to extract the control-panel source."; return 1; }
-        extracted=$(find "$temp_dir/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
-        installer="$extracted/control-panel/install.sh"
-        [ -f "$installer" ] || { rm -rf "$temp_dir"; echo "Control-panel installer is missing from the source."; return 1; }
-    fi
-
-    panel_args=("$action")
-    [ -n "${ARG_PANEL_DOMAIN:-}" ] && panel_args+=(--domain "$ARG_PANEL_DOMAIN")
-    [ -n "${ARG_PANEL_USERNAME:-}" ] && panel_args+=(--username "$ARG_PANEL_USERNAME")
-    [ -n "${ARG_PANEL_PASSWORD:-}" ] && panel_args+=(--password "$ARG_PANEL_PASSWORD")
-    [ "$ARG_FORCE" = "1" ] && panel_args+=(--yes)
-    bash "$installer" "${panel_args[@]}"
-    local result=$?
-    [ -n "${temp_dir:-}" ] && rm -rf "$temp_dir"
-    return "$result"
-}
-
-control_panel_menu() {
-    local option
-    while true; do
-        clear; banner; _sec "Web multi-bot control panel"
-        _mi "1" "Install or update the web panel"
-        _mi "2" "Show panel and agent status"
-        _mi "3" "Reset administrator password"
-        _mi "4" "Remove only the web panel"
-        _mi "0" "Back"
-        _rule; printf "  ${C_PROMPT}❯${CR} Select: "; read -r option
-        case "$option" in
-            1)
-                printf "Management domain: "; read -r ARG_PANEL_DOMAIN
-                printf "Admin username [admin]: "; read -r ARG_PANEL_USERNAME
-                ARG_PANEL_USERNAME="${ARG_PANEL_USERNAME:-admin}"
-                control_panel_execute install
-                ;;
-            2) control_panel_execute status ;;
-            3)
-                printf "Admin username [admin]: "; read -r ARG_PANEL_USERNAME
-                ARG_PANEL_USERNAME="${ARG_PANEL_USERNAME:-admin}"
-                control_panel_execute reset-password
-                ;;
-            4) control_panel_execute remove ;;
-            0) show_menu; return ;;
-            *) echo "Invalid option." ;;
-        esac
-        echo; printf "Press Enter to continue... "; read -r _
-    done
-}
-
 function show_menu() {
     show_logo
     _sec "Menu"
@@ -2245,11 +2200,10 @@ function show_menu() {
     _mi "5" "Renew SSL certificate"
     _mi "6" "Help & Parameters"
     _mi "7" "Docker multi-bot manager"
-    _mi "8" "Web multi-bot control panel"
-    _mi "9" "Exit"
+    _mi "8" "Exit"
     _rule
     echo ""
-    printf  "  ${C_PROMPT}❯${CR} Select an option ${C_DIM}[1-9]${CR}: "
+    printf  "  ${C_PROMPT}❯${CR} Select an option ${C_DIM}[1-8]${CR}: "
     read -r option
     case $option in
         1) install_bot ;;
@@ -2259,8 +2213,7 @@ function show_menu() {
         5) renew_ssl ;;
         6) show_help_screen ;;
         7) docker_manager_menu ;;
-        8) control_panel_menu ;;
-        9) echo -e "\n${C_OK}Exiting...${CR}"; exit 0 ;;
+        8) echo -e "\n${C_OK}Exiting...${CR}"; exit 0 ;;
         *) echo -e "\n${C_BAD}Invalid option. Please try again.${CR}"; sleep 1; show_menu ;;
     esac
 }
@@ -2286,11 +2239,6 @@ function show_help_screen() {
     _kv "bot-restart" "${C_DIM}Restart one Docker bot${CR}"
     _kv "bot-logs" "${C_DIM}Follow one Docker bot's app logs${CR}"
     _kv "bot-backup-schedule" "${C_DIM}Configure daily/weekly backups${CR}"
-    _kv "panel-install" "${C_DIM}Install or update the web multi-bot panel${CR}"
-    _kv "panel-status" "${C_DIM}Show web panel and agent status${CR}"
-    _kv "panel-reset-password" "${C_DIM}Reset the web panel administrator${CR}"
-    _kv "panel-remove" "${C_DIM}Remove the web panel without removing customer bots${CR}"
-    _kv "docker-init" "${C_DIM}Initialize Docker and the shared HTTPS gateway${CR}"
     _kv "menu" "${C_DIM}Open this interactive panel (default)${CR}"
 
     _sec "Install parameters"
@@ -2309,9 +2257,6 @@ function show_help_screen() {
     _kv "--schedule" "${C_DIM}daily | weekly | off${CR}"
     _kv "--retention" "${C_DIM}Number of backups to keep${CR}"
     _kv "--source-dir" "${C_DIM}Install from a local source directory${CR}"
-    _kv "--panel-domain" "${C_DIM}HTTPS domain for the web management panel${CR}"
-    _kv "--panel-user" "${C_DIM}Web panel administrator username${CR}"
-    _kv "--panel-password" "${C_DIM}Initial/reset web panel password${CR}"
     _kv "--yes" "${C_DIM}Skip interactive confirmations${CR}"
     _kv "-h, --help" "${C_DIM}Show CLI help and exit${CR}"
 
@@ -2326,7 +2271,6 @@ function show_help_screen() {
     printf "    ${C_DIM}              --admin 111 --domain shop1.example.com${CR}\n"
     printf "    ${C_KEY}mirza bot-backup --id shop1 --retention 14${CR}\n"
     printf "    ${C_KEY}mirza bot-restore --id shop1 --backup /path/to/backup.tar.gz${CR}\n"
-    printf "    ${C_KEY}mirza panel-install --panel-domain manager.example.com${CR}\n"
 
     echo ""
     _rule
@@ -2636,7 +2580,7 @@ function install_bot() {
         }
 
         run_step "Installing extra modules (php-soap, php-ssh2, libssh2)" \
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y php8.2-soap php8.2-ssh2 libssh2-1-dev libssh2-1" \
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y php8.2-soap php8.2-ssh2 php8.2-sqlite3 nodejs npm sqlite3 libssh2-1-dev libssh2-1" \
             || { show_step_error; install_pause "Installing extra PHP modules"; }
 
         run_step "Enabling & starting services (MySQL, Apache)" \
@@ -3026,6 +2970,10 @@ EOF
     run_step "Installing bot auto-updater" "install_bot_auto_updater" \
         || { show_step_error; install_pause "Installing bot auto-updater"; }
 
+    run_step "Installing Fragment TON signer and order worker" \
+        "chmod +x '$BOT_DIR/services/fragment-signer/install-service.sh' && '$BOT_DIR/services/fragment-signer/install-service.sh' '$BOT_DIR' '$dbname'" \
+        || { show_step_error; install_pause "Installing Fragment TON signer"; }
+
     # ── Done ──
     mark_phase COMPLETE
     clear
@@ -3243,6 +3191,15 @@ function remove_bot() {
         exit 0
     fi
     echo "Removing Mirza Bot..." | tee -a "$LOG_FILE"
+    for unit in /etc/systemd/system/mirza-fragment-signer-*.service; do
+        [ -f "$unit" ] || continue
+        service_name=$(basename "$unit")
+        sudo systemctl disable --now "$service_name" >/dev/null 2>&1 || true
+        sudo rm -f "$unit"
+    done
+    sudo rm -f /etc/cron.d/mirza-fragment-* /etc/mirza/fragment-signer-*.env 2>/dev/null || true
+    sudo rm -rf /opt/mirza-fragment-signer-* /var/lib/mirza-fragment 2>/dev/null || true
+    sudo systemctl daemon-reload >/dev/null 2>&1 || true
     CONFIG_PATH="/var/www/html/mirzaprobotconfig/config.php"
     if [ -f "$CONFIG_PATH" ]; then
         sudo shred -u -n 5 "$CONFIG_PATH" && echo -e "\e[92mConfig file securely removed: $CONFIG_PATH\033[0m" | tee -a "$LOG_FILE" || {
@@ -3421,7 +3378,7 @@ function migrate_to_pro() {
     NEW_BOT_DIR="/var/www/html/mirzaprobotconfig"
     rm -rf "$OLD_BOT_DIR"
     mkdir -p "$NEW_BOT_DIR"
-    ZIP_URL="https://github.com/TheRealMr404/TheRealBot-Premium/archive/refs/heads/main.zip"
+    ZIP_URL="https://github.com/TheRealMr404/TheRealBot/archive/refs/heads/main.zip"
     TEMP_DIR="/tmp/mirzabot_mig"
     mkdir -p "$TEMP_DIR"
     run_step "Downloading Mirza source" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
@@ -3530,7 +3487,6 @@ ARG_NAME=""       ARG_TOKEN=""      ARG_ADMIN=""      ARG_DOMAIN=""
 ARG_DBUSER=""     ARG_DBPASS=""     ARG_VERSION=""    ARG_CHANNEL=""
 ARG_ID=""         ARG_BACKUP=""     ARG_SCHEDULE=""   ARG_RETENTION="7"
 ARG_SOURCE_DIR="" ARG_FORCE="0"
-ARG_TOKEN_FILE="" ARG_PANEL_DOMAIN="" ARG_PANEL_USERNAME="" ARG_PANEL_PASSWORD=""
 
 print_usage() {
     cat <<USAGE
@@ -3556,12 +3512,6 @@ print_usage() {
     bot-restart        Restart a Docker bot
     bot-logs           Follow Docker bot logs
     bot-backup-schedule Configure automatic backups
-    panel-install      Install or update the web multi-bot control panel
-    panel-status       Show control-panel status
-    panel-reset-password Reset the control-panel administrator password
-    panel-remove       Remove only the web panel; customer bots remain intact
-    gateway-refresh    Refresh HTTPS routes for bots and the control panel
-    docker-init        Initialize the isolated Docker runtime and gateway
     menu               Show interactive menu (default)
 
   Options:
@@ -3578,10 +3528,6 @@ print_usage() {
     --schedule <mode>  daily | weekly | off
     --retention <n>    Number of backups to keep
     --source-dir <path> Use a local bot source directory
-    --token-file <path> Read Telegram token from a protected file
-    --panel-domain <domain> HTTPS domain for the web control panel
-    --panel-user <name> Web panel administrator username
-    --panel-password <password> Initial/reset web panel password
     --yes              Skip destructive confirmations
     -h, --help         Show this help and exit
 
@@ -3595,7 +3541,6 @@ print_usage() {
     mirza bot-add --id shop2 --name ShopBot2 --token TOKEN --admin 111 --domain shop2.example.com --source-dir /path/to/custom-source
     mirza bot-backup --id shop1 --retention 14
     mirza bot-restore --id shop1 --backup /opt/mirza/backups/shop1/file.tar.gz
-    mirza panel-install --panel-domain manager.example.com
 
 USAGE
 }
@@ -3604,7 +3549,7 @@ process_arguments() {
     local cmd="menu"
     # First non-flag token is the command
     case "$1" in
-        install|update|remove|migrate|renew|updater-refresh|menu|bot-add|bot-list|bot-update|bot-backup|bot-restore|bot-remove|bot-restart|bot-logs|bot-backup-schedule|panel-install|panel-status|panel-reset-password|panel-remove|gateway-refresh|docker-init) cmd="$1"; shift ;;
+        install|update|remove|migrate|renew|updater-refresh|menu|bot-add|bot-list|bot-update|bot-backup|bot-restore|bot-remove|bot-restart|bot-logs|bot-backup-schedule) cmd="$1"; shift ;;
         -h|--help) print_usage; exit 0 ;;
         "") cmd="menu" ;;
         --*) cmd="menu" ;;            # only flags given -> menu, but still parse flags
@@ -3614,14 +3559,13 @@ process_arguments() {
     # Parse remaining flags
     while [ $# -gt 0 ]; do
         case "$1" in
-            --name|--token|--token-file|--admin|--domain|--db-user|--db-pass|--version|--channel|--id|--backup|--schedule|--retention|--source-dir|--panel-domain|--panel-user|--panel-password)
+            --name|--token|--admin|--domain|--db-user|--db-pass|--version|--channel|--id|--backup|--schedule|--retention|--source-dir)
                 [ $# -ge 2 ] || { echo -e "\e[91mMissing value for $1\033[0m"; exit 1; }
                 ;;
         esac
         case "$1" in
             --name)    ARG_NAME="$2";    shift 2 ;;
             --token)   ARG_TOKEN="$2";   shift 2 ;;
-            --token-file) ARG_TOKEN_FILE="$2"; shift 2 ;;
             --admin)   ARG_ADMIN="$2";   shift 2 ;;
             --domain)  ARG_DOMAIN="$2";  shift 2 ;;
             --db-user) ARG_DBUSER="$2";  shift 2 ;;
@@ -3633,9 +3577,6 @@ process_arguments() {
             --schedule) ARG_SCHEDULE="$2"; shift 2 ;;
             --retention) ARG_RETENTION="$2"; shift 2 ;;
             --source-dir) ARG_SOURCE_DIR="$2"; shift 2 ;;
-            --panel-domain) ARG_PANEL_DOMAIN="$2"; shift 2 ;;
-            --panel-user) ARG_PANEL_USERNAME="$2"; shift 2 ;;
-            --panel-password) ARG_PANEL_PASSWORD="$2"; shift 2 ;;
             --yes) ARG_FORCE="1"; shift ;;
             -h|--help) print_usage; exit 0 ;;
             *) echo -e "\e[91mUnknown option: $1\033[0m"; print_usage; exit 1 ;;
@@ -3662,12 +3603,6 @@ process_arguments() {
         bot-restart) docker_bot_restart "$ARG_ID" ;;
         bot-logs) docker_bot_logs "$ARG_ID" ;;
         bot-backup-schedule) docker_bot_schedule_backup "$ARG_ID" "${ARG_SCHEDULE:-daily}" "$ARG_RETENTION" ;;
-        panel-install) control_panel_execute install ;;
-        panel-status) control_panel_execute status ;;
-        panel-reset-password) control_panel_execute reset-password ;;
-        panel-remove) control_panel_execute remove ;;
-        gateway-refresh) docker_refresh_gateway ;;
-        docker-init) docker_install_engine ;;
         menu|*)  show_menu ;;
     esac
 }

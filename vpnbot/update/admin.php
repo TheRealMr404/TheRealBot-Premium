@@ -36,10 +36,10 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
 } elseif (preg_match('/^rsgw_toggle_(card|zarinpal|aqayepardakht|nowpayments)$/', $datain, $gatewayMatch)) {
     $gatewayKey = $gatewayMatch[1];
     $currentlyEnabled = (bool) $setting['payment_gateways'][$gatewayKey]['enabled'];
-    if (!$currentlyEnabled && !resellerGatewayIsAvailable($gatewayKey, $setting)) {
+    if (!$currentlyEnabled && !resellerGatewayIsAvailable($gatewayKey)) {
         telegram('answerCallbackQuery', [
             'callback_query_id' => $callback_query_id,
-            'text' => 'ابتدا اطلاعات اتصال این درگاه را در همین ربات تکمیل کنید.',
+            'text' => 'ابتدا این درگاه را در ربات اصلی فعال و اطلاعات اتصال آن را تکمیل کنید.',
             'show_alert' => true,
         ]);
         return;
@@ -118,98 +118,6 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
     $setting = resellerBotSaveSettings($ApiToken, $setting);
     $view = resellerGatewayEditorView($setting, $gatewayMatch[1]);
     Editmessagetext($from_id, $message_id, $view['text'], $view['keyboard'], 'HTML');
-} elseif (preg_match('/^rsgw_credential_(zarinpal|aqayepardakht|nowpayments)$/', $datain, $gatewayMatch)) {
-    savedata('clear', 'reseller_gateway', $gatewayMatch[1]);
-    $labels = [
-        'zarinpal' => 'مرچنت آیدی زرین‌پال',
-        'aqayepardakht' => 'PIN آقای پرداخت',
-        'nowpayments' => 'API Key سرویس NOWPayments',
-    ];
-    sendmessage($from_id, 'مقدار <b>' . $labels[$gatewayMatch[1]] . '</b> را ارسال کنید. پیام شما پس از ثبت حذف می‌شود.', $backadmin, 'HTML');
-    step('reseller_gateway_credential', $from_id);
-} elseif ($user['step'] === 'reseller_gateway_credential') {
-    $stepData = json_decode($user['Processing_value'], true);
-    $gatewayKey = $stepData['reseller_gateway'] ?? '';
-    $credentialField = resellerGatewayCredentialField($gatewayKey);
-    $credential = trim((string) $text);
-    if ($credentialField === '' || !preg_match('/^[A-Za-z0-9._-]{8,255}$/', $credential)) {
-        sendmessage($from_id, 'اطلاعات اتصال معتبر نیست. مقدار را بدون فاصله و به‌صورت کامل ارسال کنید.', $backadmin, 'HTML');
-        return;
-    }
-    deletemessage($from_id, $message_id);
-    $setting['payment_gateways'][$gatewayKey][$credentialField] = $credential;
-    $setting = resellerBotSaveSettings($ApiToken, $setting);
-    $view = resellerGatewayEditorView($setting, $gatewayKey);
-    sendmessage($from_id, 'اطلاعات اتصال با موفقیت و به‌صورت اختصاصی ذخیره شد.\n\n' . $view['text'], $view['keyboard'], 'HTML');
-    step('home', $from_id);
-} elseif ($datain === 'rsgw_ipn_nowpayments') {
-    savedata('clear', 'reseller_gateway', 'nowpayments');
-    sendmessage($from_id, 'IPN Secret سرویس NOWPayments را ارسال کنید. این پیام پس از ثبت حذف می‌شود.', $backadmin, 'HTML');
-    step('reseller_nowpayments_ipn_secret', $from_id);
-} elseif ($user['step'] === 'reseller_nowpayments_ipn_secret') {
-    $secret = trim((string) $text);
-    if (strlen($secret) < 8 || strlen($secret) > 255 || preg_match('/\s/', $secret)) {
-        sendmessage($from_id, 'IPN Secret معتبر نیست.', $backadmin, 'HTML');
-        return;
-    }
-    deletemessage($from_id, $message_id);
-    $setting['payment_gateways']['nowpayments']['ipn_secret'] = $secret;
-    $setting = resellerBotSaveSettings($ApiToken, $setting);
-    $view = resellerGatewayEditorView($setting, 'nowpayments');
-    sendmessage($from_id, 'IPN Secret ذخیره شد.\n\n' . $view['text'], $view['keyboard'], 'HTML');
-    step('home', $from_id);
-} elseif (preg_match('/^rsgw_credential_clear_(zarinpal|aqayepardakht|nowpayments)$/', $datain, $gatewayMatch)) {
-    $gatewayKey = $gatewayMatch[1];
-    $credentialField = resellerGatewayCredentialField($gatewayKey);
-    $setting['payment_gateways'][$gatewayKey][$credentialField] = '';
-    if ($gatewayKey === 'nowpayments') {
-        $setting['payment_gateways'][$gatewayKey]['ipn_secret'] = '';
-    }
-    $setting['payment_gateways'][$gatewayKey]['enabled'] = false;
-    $setting = resellerBotSaveSettings($ApiToken, $setting);
-    $view = resellerGatewayEditorView($setting, $gatewayKey);
-    Editmessagetext($from_id, $message_id, $view['text'], $view['keyboard'], 'HTML');
-} elseif (preg_match('/^rsgw_(min|max|cashback)_(card|zarinpal|aqayepardakht|nowpayments)$/', $datain, $gatewayMatch)) {
-    savedata('clear', 'reseller_gateway_field', $gatewayMatch[1]);
-    savedata('save', 'reseller_gateway', $gatewayMatch[2]);
-    $prompt = $gatewayMatch[1] === 'cashback'
-        ? 'درصد کش‌بک را از ۰ تا ۱۰۰ ارسال کنید.'
-        : 'مبلغ را به تومان و فقط به‌صورت عدد ارسال کنید.';
-    sendmessage($from_id, $prompt, $backadmin, 'HTML');
-    step('reseller_gateway_numeric_setting', $from_id);
-} elseif ($user['step'] === 'reseller_gateway_numeric_setting') {
-    $stepData = json_decode($user['Processing_value'], true);
-    $gatewayKey = $stepData['reseller_gateway'] ?? '';
-    $field = $stepData['reseller_gateway_field'] ?? '';
-    if (!isset($setting['payment_gateways'][$gatewayKey]) || !in_array($field, ['min', 'max', 'cashback'], true)) {
-        sendmessage($from_id, 'درخواست تنظیمات معتبر نیست.', $keyboardadmin, 'HTML');
-        step('home', $from_id);
-        return;
-    }
-    if ($field === 'cashback') {
-        if (!is_numeric($text) || (float) $text < 0 || (float) $text > 100) {
-            sendmessage($from_id, 'درصد کش‌بک باید بین ۰ تا ۱۰۰ باشد.', $backadmin, 'HTML');
-            return;
-        }
-        $setting['payment_gateways'][$gatewayKey]['cashback_percent'] = round((float) $text, 2);
-    } else {
-        if (!ctype_digit((string) $text) || (int) $text < 1000 || (int) $text > 1000000000) {
-            sendmessage($from_id, 'مبلغ باید عددی و بین ۱٬۰۰۰ تا ۱٬۰۰۰٬۰۰۰٬۰۰۰ تومان باشد.', $backadmin, 'HTML');
-            return;
-        }
-        $amountField = $field === 'min' ? 'min_amount' : 'max_amount';
-        $otherField = $field === 'min' ? 'max_amount' : 'min_amount';
-        if (($field === 'min' && (int) $text > (int) $setting['payment_gateways'][$gatewayKey][$otherField])
-            || ($field === 'max' && (int) $text < (int) $setting['payment_gateways'][$gatewayKey][$otherField])) {
-            sendmessage($from_id, 'حداقل مبلغ نمی‌تواند از حداکثر بیشتر باشد.', $backadmin, 'HTML');
-            return;
-        }
-        $setting['payment_gateways'][$gatewayKey][$amountField] = (int) $text;
-    }
-    $setting = resellerBotSaveSettings($ApiToken, $setting);
-    $view = resellerGatewayEditorView($setting, $gatewayKey);
-    sendmessage($from_id, 'تنظیمات درگاه ذخیره شد.\n\n' . $view['text'], $view['keyboard'], 'HTML');
-    step('home', $from_id);
 } elseif ($text == "🎨 شخصی‌سازی ربات") {
     $statusText = $setting['bot_enabled'] ? 'روشن' : 'در حالت تعمیرات';
     $summary = "🎨 <b>شخصی‌سازی ربات نماینده</b>\n\n"
@@ -251,7 +159,7 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
     sendmessage($from_id, '✅ متن انتخاب درگاه ذخیره شد.', $keyboard_reseller_brand, 'HTML');
     step('home', $from_id);
 } elseif ($text == "✅ متن پرداخت موفق") {
-    sendmessage($from_id, "متن تأیید پرداخت را ارسال کنید.\n\nمتغیرهای مجاز:\n<code>{amount}</code> مبلغ پرداخت\n<code>{cashback}</code> مبلغ کش‌بک\n<code>{credit}</code> مجموع مبلغ و کش‌بک\n<code>{balance}</code> موجودی جدید\n<code>{method}</code> روش پرداخت\n<code>{order}</code> کد پیگیری", $backadmin, 'HTML');
+    sendmessage($from_id, "متن تأیید پرداخت را ارسال کنید.\n\nمتغیرهای مجاز:\n<code>{amount}</code> مبلغ\n<code>{balance}</code> موجودی جدید\n<code>{method}</code> روش پرداخت\n<code>{order}</code> کد پیگیری", $backadmin, 'HTML');
     step('reseller_payment_success_text', $from_id);
 } elseif ($user['step'] === 'reseller_payment_success_text') {
     $newText = trim(strip_tags((string) $text));
@@ -397,15 +305,6 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
         ));
         return;
     }
-    if (!hash_equals((string) $ApiToken, (string) ($Payment_report['bottype'] ?? ''))
-        || !in_array((string) ($Payment_report['Payment_Method'] ?? ''), ['cart to cart', 'arze digital offline'], true)) {
-        telegram('answerCallbackQuery', [
-            'callback_query_id' => $callback_query_id,
-            'text' => 'این تراکنش متعلق به این ربات نیست.',
-            'show_alert' => true,
-        ]);
-        return;
-    }
     $format_price_cart = number_format($Payment_report['price']);
     $Balance_id = select("user", "*", "id", $Payment_report['id_user'], "select");
     if ($Payment_report['payment_Status'] == "paid" || $Payment_report['payment_Status'] == "reject") {
@@ -424,14 +323,7 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
         Editmessagetext($from_id, $message_id, $textconfrom, $Confirm_pay);
         return;
     }
-    if (!DirectPaymentbot($order_id)) {
-        telegram('answerCallbackQuery', [
-            'callback_query_id' => $callback_query_id,
-            'text' => 'ثبت پرداخت ناموفق بود. دوباره تلاش کنید.',
-            'show_alert' => true,
-        ]);
-        return;
-    }
+    DirectPaymentbot($order_id);
     $Payment_report['price'] = number_format($Payment_report['price']);
     $text_report = "📣 نماینده رسیبد پرداخت کارت به کارت را تایید کرد.
         
@@ -465,15 +357,6 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
         ));
         return;
     }
-    if (!hash_equals((string) $ApiToken, (string) ($Payment_report['bottype'] ?? ''))
-        || !in_array((string) ($Payment_report['Payment_Method'] ?? ''), ['cart to cart', 'arze digital offline'], true)) {
-        telegram('answerCallbackQuery', [
-            'callback_query_id' => $callback_query_id,
-            'text' => 'این تراکنش متعلق به این ربات نیست.',
-            'show_alert' => true,
-        ]);
-        return;
-    }
     update("user", "Processing_value", $Payment_report['id_user'], "id", $from_id);
     update("user", "Processing_value_one", $id_order, "id", $from_id);
     if ($Payment_report['payment_Status'] == "reject" || $Payment_report['payment_Status'] == "paid") {
@@ -492,22 +375,9 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
     Editmessagetext($from_id, $message_id, $text_inline, null);
 } elseif ($user['step'] == "reject-dec") {
     $Payment_report = select("Payment_report", "*", "id_order", $user['Processing_value_one'], "select");
-    if (!$Payment_report
-        || !hash_equals((string) $ApiToken, (string) ($Payment_report['bottype'] ?? ''))
-        || !in_array((string) ($Payment_report['Payment_Method'] ?? ''), ['cart to cart', 'arze digital offline'], true)) {
-        sendmessage($from_id, '❌ درخواست رد پرداخت معتبر نیست.', $keyboardadmin, 'HTML');
-        step('home', $from_id);
-        return;
-    }
-    $rejectReason = trim(strip_tags((string) $text));
-    if ($rejectReason === '' || mb_strlen($rejectReason, 'UTF-8') > 1000) {
-        sendmessage($from_id, '❌ دلیل رد باید بین ۱ تا ۱۰۰۰ کاراکتر باشد.', $backadmin, 'HTML');
-        return;
-    }
-    $safeRejectReason = htmlspecialchars($rejectReason, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-    update("Payment_report", "dec_not_confirmed", $rejectReason, "id_order", $user['Processing_value_one']);
+    update("Payment_report", "dec_not_confirmed", $text, "id_order", $user['Processing_value_one']);
     $text_reject = "❌ کاربر گرامی پرداخت شما به دلیل زیر رد گردید.
-✍️ $safeRejectReason
+✍️ $text
 🛒 کد پیگیری پرداخت: {$user['Processing_value_one']}
                 ";
     sendmessage($from_id, $textbotlang['Admin']['Payment']['Rejected'], $keyboardadmin, 'HTML');
@@ -519,7 +389,7 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
 👤آیدی عددی  ادمین تایید کننده : $from_id
 نام کاربری ادمین تایید کننده : @$username
 💰 مبلغ پرداخت : {$Payment_report['price']}
-دلیل رد کردن : $safeRejectReason
+دلیل رد کردن : $text
 👤 ایدی عددی کاربر: {$Payment_report['id_user']}";
     if (strlen($settingmain['Channel_Report']) > 0) {
         telegram('sendmessage', [
@@ -551,10 +421,9 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
         return;
     }
     sendmessage($from_id, $textbotlang['Admin']['manageadmin']['addadminset'], $keyboardadmin, 'HTML');
-    sendmessage($text, $textbotlang['Admin']['manageadmin']['adminedsenduser'], null, 'HTML');
+    sendmessage($user['Processing_value'], $textbotlang['Admin']['manageadmin']['adminedsenduser'], null, 'HTML');
     step('home', $from_id);
-    $admin_ids[] = (string) $text;
-    $admin_ids = array_values(array_unique($admin_ids));
+    $admin_ids[] = $text;
     update("botsaz", "admin_ids", json_encode($admin_ids), "bot_token", $ApiToken);
 } elseif (preg_match('/removeadmin_(\w+)/', $datain, $dataget)) {
     $idadmin = $dataget[1];
@@ -747,52 +616,18 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
     $Balance_user_afters = number_format(select("user", "*", "id", $user['Processing_value'], "select")['Balance']);
 } elseif ($text == "📊 آمار ربات") {
     $statistics = select("user", "*", "bottype", $ApiToken, "count");
-    $testStatement = $pdo->prepare("SELECT COUNT(*) FROM invoice WHERE name_product = 'سرویس تست' AND bottype = :bot_token");
-    $testStatement->execute([':bot_token' => $ApiToken]);
-    $count_usertest = (int) $testStatement->fetchColumn();
-    $salesStatement = $pdo->prepare(
-        "SELECT COUNT(DISTINCT id_user) AS buyer_count,
-                COUNT(*) AS invoice_count,
-                COALESCE(SUM(price_product), 0) AS total_price
-         FROM invoice
-         WHERE status IN ('active', 'end_of_time', 'end_of_volume', 'sendedwarn', 'send_on_hold')
-           AND name_product != 'سرویس تست'
-           AND bottype = :bot_token"
-    );
-    $salesStatement->execute([':bot_token' => $ApiToken]);
-    $salesStats = $salesStatement->fetch(PDO::FETCH_ASSOC);
-    $statisticsorder = (int) ($salesStats['buyer_count'] ?? 0);
-    $invoice = (int) ($salesStats['invoice_count'] ?? 0);
-    $invoicesum = number_format((int) ($salesStats['total_price'] ?? 0));
-    $paymentStatement = $pdo->prepare(
-        "SELECT Payment_Method, COUNT(*) AS payment_count, COALESCE(SUM(price), 0) AS payment_total
-         FROM Payment_report
-         WHERE payment_Status = 'paid'
-           AND bottype = :bot_token
-           AND Payment_Method IN ('cart to cart', 'zarinpal', 'aqayepardakht', 'nowpayment')
-         GROUP BY Payment_Method"
-    );
-    $paymentStatement->execute([':bot_token' => $ApiToken]);
-    $paymentRows = $paymentStatement->fetchAll(PDO::FETCH_ASSOC);
-    $paymentTitles = [
-        'cart to cart' => 'کارت‌به‌کارت',
-        'zarinpal' => 'زرین‌پال',
-        'aqayepardakht' => 'آقای پرداخت',
-        'nowpayment' => 'NOWPayments',
-    ];
-    $paymentTotal = 0;
-    $paymentCount = 0;
-    $paymentDetails = '';
-    foreach ($paymentRows as $paymentRow) {
-        $paymentTotal += (int) $paymentRow['payment_total'];
-        $paymentCount += (int) $paymentRow['payment_count'];
-        $paymentTitle = $paymentTitles[$paymentRow['Payment_Method']] ?? $paymentRow['Payment_Method'];
-        $paymentDetails .= "\n• {$paymentTitle}: " . number_format((int) $paymentRow['payment_total'])
-            . ' تومان (' . number_format((int) $paymentRow['payment_count']) . ' تراکنش)';
-    }
-    if ($paymentDetails === '') {
-        $paymentDetails = "\n• هنوز پرداخت موفقی ثبت نشده است.";
-    }
+    $stmt2 = $pdo->prepare("SELECT COUNT( DISTINCT id_user) as count FROM `invoice` WHERE name_product = 'سرویس تست' AND  bottype = '$ApiToken'");
+    $stmt2->execute();
+    $statisticsorder = $stmt2->fetch(PDO::FETCH_ASSOC)['count'];
+    $stmt = $pdo->prepare("SELECT * FROM invoice WHERE name_product = 'سرویس تست' AND bottype = '$ApiToken'");
+    $stmt->execute();
+    $count_usertest = $stmt->rowCount();
+    $sql1 = "SELECT COUNT(*) AS invoice_count FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') AND name_product != 'سرویس تست' AND bottype = '$ApiToken'";
+    $stmt1 = $pdo->query($sql1);
+    $invoice = $stmt1->fetch(PDO::FETCH_ASSOC)['invoice_count'];
+    $sql2 = "SELECT SUM(price_product) AS total_price FROM invoice WHERE (status = 'active' OR status = 'end_of_time' OR status = 'end_of_volume' OR status = 'sendedwarn' OR status = 'send_on_hold') AND name_product != 'سرویس تست' AND bottype = '$ApiToken'";
+    $stmt2 = $pdo->query($sql2);
+    $invoicesum = number_format($stmt2->fetch(PDO::FETCH_ASSOC)['total_price'], 0);
     $statisticsall = "
 📊 آمار کلی ربات  
 
@@ -801,10 +636,6 @@ if ($text == "💳 مدیریت درگاه‌ها" || $datain === 'rsgw_back') {
 📌 تعداد اکانت های تست گرفته شده : $count_usertest نفر
 📌 تعداد فروش کل : $invoice عدد
 📌 جمع فروش کل : $invoicesum تومان
-
-💳 پرداخت‌های کیف پول: " . number_format($paymentCount) . " تراکنش
-💰 مجموع واریزی کیف پول: " . number_format($paymentTotal) . " تومان
-{$paymentDetails}
 ";
     sendmessage($from_id, $statisticsall, null, 'HTML');
 } elseif ($text == "💰 تنظیم قیمت محصول") {

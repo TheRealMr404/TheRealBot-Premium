@@ -16,24 +16,24 @@ function readJsonFileIfExists($path, $default = [])
 }
 
 function DirectPaymentbot($order_id,$image = 'images.jpg'){
-    global $ApiToken,$Confirm_pay,$from_id,$message_id;
+    global $pdo,$ManagePanel,$textbotlang,$keyboardextendfnished,$keyboard,$Confirm_pay,$from_id,$message_id,$datatextbot;
+    $setting = select("setting", "*");
     $Payment_report = select("Payment_report", "*", "id_order", $order_id,"select");
-    if (!$Payment_report
-        || empty($Payment_report['bottype'])
-        || !hash_equals((string) $ApiToken, (string) $Payment_report['bottype'])
-        || !in_array((string) ($Payment_report['Payment_Method'] ?? ''), ['cart to cart', 'arze digital offline'], true)) {
-        return false;
-    }
-
-    $result = resellerCompleteOnlinePayment($order_id, 'کارت‌به‌کارت');
-    if (empty($result['ok'])) {
-        return false;
-    }
-
+    $format_price_cart = number_format($Payment_report['price']);
     $Balance_id = select("user", "*", "id", $Payment_report['id_user'],"select");
-    $format_price_cart = number_format((int) $Payment_report['price']);
-    if (($Payment_report['Payment_Method'] ?? '') === "cart to cart"
-        || ($Payment_report['Payment_Method'] ?? '') === "arze digital offline") {
+    $Balance_id['Balance'] = json_decode(file_get_contents("data/{$Payment_report['id_user']}/{$Payment_report['id_user']}.json"),true)['Balance'];
+    update("user","Processing_value","0", "id",$Balance_id['id']);
+    update("user","Processing_value_one","0", "id",$Balance_id['id']);
+    update("user","Processing_value_tow","0", "id",$Balance_id['id']);
+    update("user","Processing_value_four","0", "id",$Balance_id['id']);
+        $Balance_confrim = intval($Balance_id['Balance']) + intval($Payment_report['price']);
+        $userbalance = json_decode(file_get_contents("data/{$Payment_report['id_user']}/{$Payment_report['id_user']}.json"),true);
+        $userbalance['Balance'] = $Balance_confrim;
+        file_put_contents("data/{$Payment_report['id_user']}/{$Payment_report['id_user']}.json",json_encode($userbalance));
+        update("Payment_report","payment_Status","paid","id_order",$Payment_report['id_order']);
+        $Payment_report['price'] = number_format($Payment_report['price'], 0);
+        $format_price_cart = $Payment_report['price'];
+        if($Payment_report['Payment_Method'] == "cart to cart" or   $Payment_report['Payment_Method'] == "arze digital offline"){
         $textconfrom = "⭕️ یک پرداخت جدید انجام شده است
         افزایش موجودی.
 👤 شناسه کاربر: <code>{$Balance_id['id']}</code>
@@ -42,8 +42,10 @@ function DirectPaymentbot($order_id,$image = 'images.jpg'){
 💸 مبلغ پرداختی: $format_price_cart تومان
 ✍️ توضیحات : {$Payment_report['dec_not_confirmed']}";
         Editmessagetext($from_id, $message_id, $textconfrom, $Confirm_pay);
-    }
-    return true;
+        }
+        sendmessage($Payment_report['id_user'], "💎 کاربر گرامی مبلغ {$Payment_report['price']} تومان به کیف پول شما واریز گردید با تشکراز پرداخت شما.
+                
+🛒 کد پیگیری شما: {$Payment_report['id_order']}", null, 'HTML');
 }
 function channel_check($id_channel){
     global $from_id;

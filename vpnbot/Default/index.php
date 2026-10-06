@@ -1284,15 +1284,11 @@ $textonebuy
         );
         return;
     }
-    $availableGateways = array_filter(resellerGatewayCatalog($setting), function ($gateway) use ($setting, $amount) {
-        $range = resellerGatewayAmountRange($gateway['key'], $setting);
-        return $gateway['enabled']
-            && $gateway['available']
-            && $amount >= $range['min']
-            && $amount <= $range['max'];
+    $availableGateways = array_filter(resellerGatewayCatalog($setting), function ($gateway) {
+        return $gateway['enabled'] && $gateway['available'];
     });
     if (!$availableGateways) {
-        sendmessage($from_id, '❌ برای این مبلغ روش پرداخت فعالی وجود ندارد. مبلغ دیگری وارد کنید یا با پشتیبانی در ارتباط باشید.', $backuser, 'HTML');
+        sendmessage($from_id, '❌ در حال حاضر روش پرداخت فعالی وجود ندارد. لطفاً با پشتیبانی در ارتباط باشید.', $backuser, 'HTML');
         step('home', $from_id);
         return;
     }
@@ -1303,7 +1299,7 @@ $textonebuy
     sendmessage(
         $from_id,
         $paymentIntroText,
-        resellerPaymentKeyboard($setting, 'account', $amount),
+        resellerPaymentKeyboard($setting),
         'HTML'
     );
     step('choose_reseller_gateway', $from_id);
@@ -1318,7 +1314,7 @@ $textonebuy
     }
     $gatewayKey = $resellerPayMatch[1];
     $gatewayConfig = $setting['payment_gateways'][$gatewayKey] ?? null;
-    if (!$gatewayConfig || !$gatewayConfig['enabled'] || !resellerGatewayIsAvailable($gatewayKey, $setting)) {
+    if (!$gatewayConfig || !$gatewayConfig['enabled'] || !resellerGatewayIsAvailable($gatewayKey)) {
         telegram('answerCallbackQuery', [
             'callback_query_id' => $callback_query_id,
             'text' => 'این روش پرداخت در حال حاضر فعال نیست.',
@@ -1333,7 +1329,7 @@ $textonebuy
         step('home', $from_id);
         return;
     }
-    $gatewayRange = resellerGatewayAmountRange($gatewayKey, $setting);
+    $gatewayRange = resellerGatewayAmountRange($gatewayKey);
     if ($amount < $gatewayRange['min'] || $amount > $gatewayRange['max']) {
         $maximumText = $gatewayRange['max'] === PHP_INT_MAX ? 'نامحدود' : number_format($gatewayRange['max']) . ' تومان';
         sendmessage(
@@ -1354,7 +1350,7 @@ $textonebuy
         $Payment_Method = 'cart to cart';
     } elseif ($gatewayKey === 'zarinpal') {
         $Payment_Method = 'zarinpal';
-        $pay = resellerCreateZarinpalPayment($setting, $amount, $randomString);
+        $pay = createPayZarinpal($amount, $randomString);
         $authority = (string) ($pay['data']['authority'] ?? '');
         if ($authority === '') {
             sendmessage($from_id, '❌ ساخت پرداخت زرین‌پال ناموفق بود. کمی بعد دوباره تلاش کنید.', $backuser, 'HTML');
@@ -1363,7 +1359,7 @@ $textonebuy
         $paymentUrl = 'https://www.zarinpal.com/pg/StartPay/' . rawurlencode($authority);
     } elseif ($gatewayKey === 'aqayepardakht') {
         $Payment_Method = 'aqayepardakht';
-        $pay = resellerCreateAqayePardakhtPayment($setting, $amount, $randomString);
+        $pay = createPayaqayepardakht($amount, $randomString);
         $authority = (string) ($pay['transid'] ?? '');
         if ((string) ($pay['code'] ?? '') !== '1' || $authority === '') {
             sendmessage($from_id, '❌ ساخت پرداخت آقای پرداخت ناموفق بود. کمی بعد دوباره تلاش کنید.', $backuser, 'HTML');
@@ -1379,7 +1375,7 @@ $textonebuy
             return;
         }
         $usdPrice = round($amount / $usdRate, 2);
-        $pay = resellerCreateNowPaymentsInvoice($setting, $usdPrice, $randomString);
+        $pay = nowPayments('invoice', $usdPrice, $randomString, 'Reseller wallet deposit');
         $authority = (string) ($pay['id'] ?? '');
         $paymentUrl = (string) ($pay['invoice_url'] ?? '');
         if ($authority === '' || !filter_var($paymentUrl, FILTER_VALIDATE_URL)) {
@@ -1416,23 +1412,12 @@ $textonebuy
     step('home', $from_id);
 } elseif ($user['step'] == "getresidcart") {
     $userdate = json_decode($user['Processing_value'], true);
-    $orderId = (string) ($userdate['id_order'] ?? '');
-    $PaymentReport = $orderId !== '' ? select("Payment_report", '*', "id_order", $orderId, "select") : false;
-    if (!$PaymentReport
-        || !hash_equals((string) $ApiToken, (string) ($PaymentReport['bottype'] ?? ''))
-        || !hash_equals((string) $from_id, (string) ($PaymentReport['id_user'] ?? ''))
-        || ($PaymentReport['Payment_Method'] ?? '') !== 'cart to cart'
-        || ($PaymentReport['payment_Status'] ?? '') !== 'Unpaid') {
-        sendmessage($from_id, '❌ درخواست پرداخت معتبر نیست یا قبلاً بررسی شده است.', $backuser, 'HTML');
-        step('home', $from_id);
-        return;
-    }
-    $safeReceiptDescription = htmlspecialchars(trim((string) (($caption ?? '') . ' ' . $text)), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $PaymentReport = select("Payment_report", '*', "id_order", $userdate['id_order'], "select");
     $Confirm_pay = json_encode([
         'inline_keyboard' => [
             [
-                ['text' => $textbotlang['users']['Balance']['Confirmpaying'], 'callback_data' => "Confirm_pay_{$orderId}"],
-                ['text' => $textbotlang['users']['Balance']['reject_pay'], 'callback_data' => "reject_pay_{$orderId}"],
+                ['text' => $textbotlang['users']['Balance']['Confirmpaying'], 'callback_data' => "Confirm_pay_{$userdate['id_order']}"],
+                ['text' => $textbotlang['users']['Balance']['reject_pay'], 'callback_data' => "reject_pay_{$userdate['id_order']}"],
             ]
         ]
     ]);
@@ -1445,7 +1430,7 @@ $textonebuy
 ⚜️ نام کاربری: @$username
 💸 مبلغ پرداختی: $format_price_cart تومان
                 
-توضیحات: $safeReceiptDescription
+توضیحات: $caption $text
 ✍️ در صورت درست بودن رسید پرداخت را تایید نمایید.";
     foreach ($admin_ids as $id_admin) {
         if ($photo) {
@@ -1457,6 +1442,7 @@ $textonebuy
             ]);
         }
         sendmessage($id_admin, $textsendrasid, $Confirm_pay, 'HTML');
+        step('home', $id_admin);
     }
     if ($setting['report_chat_id'] !== '' && !in_array($setting['report_chat_id'], array_map('strval', $admin_ids), true)) {
         sendmessage($setting['report_chat_id'], $textsendrasid, null, 'HTML');

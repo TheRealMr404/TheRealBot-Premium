@@ -9600,15 +9600,19 @@ elseif ($user['step'] == "cr_step_get_emoji" && in_array($from_id, $admin_ids)) 
     exec($updateCommand, $updateOutput, $updateExitCode);
 
     $updateResult = trim(implode("\n", $updateOutput));
-    if ($updateResult !== '') {
-        error_log(
-            'Bot update command finished with exit code ' . $updateExitCode . ': '
-            . mb_substr($updateResult, 0, 5000)
-        );
+    $safeUpdateResult = htmlspecialchars(mb_substr($updateResult, 0, 3000), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+
+    if ($updateExitCode === 0) {
+        $updateMessage = "✅ بروزرسانی ربات با موفقیت انجام شد.";
+        if ($safeUpdateResult !== '') {
+            $updateMessage .= "\n\n<pre>{$safeUpdateResult}</pre>";
+        }
+    } else {
+        $updateMessage = "❌ بروزرسانی ربات ناموفق بود.";
+        if ($safeUpdateResult !== '') {
+            $updateMessage .= "\n\n<pre>{$safeUpdateResult}</pre>";
+        }
     }
-    $updateMessage = $updateExitCode === 0
-        ? "✅ بروزرسانی ربات با موفقیت انجام شد."
-        : "❌ بروزرسانی ربات ناموفق بود.";
 
     sendmessage($from_id, $updateMessage, $keyboardadmin, 'HTML');
     step('home', $from_id);

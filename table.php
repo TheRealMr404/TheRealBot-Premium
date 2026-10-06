@@ -1640,6 +1640,16 @@ try {
     file_put_contents('error_log tunnel_orders', $e->getMessage());
 }
 
+// Initialize the isolated virtual-services and Fragment tables during install.
+try {
+    require_once __DIR__ . '/telegram_products.php';
+    require_once __DIR__ . '/telegram_fragment.php';
+    telegramProductsEnsureSchema();
+    telegramFragmentEnsureSchema();
+} catch (Throwable $e) {
+    error_log('Fragment schema initialization failed: ' . $e->getMessage());
+    throw $e;
+}
 
 telegram('setwebhook', [
     'url' => "https://$domainhosts/index.php"

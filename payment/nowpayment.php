@@ -33,62 +33,13 @@ function nowPaymentsCallbackResponse($statusCode, $message)
     exit((string) $message);
 }
 
-function nowPaymentsFindPaymentReport($pdo, $invoiceId, $orderId)
-{
-    $invoiceId = trim((string) $invoiceId);
-    $orderId = trim((string) $orderId);
-    if ($invoiceId !== '' && $orderId !== '') {
-        $stmt = $pdo->prepare(
-            "SELECT * FROM Payment_report
-             WHERE Payment_Method = 'nowpayment'
-               AND dec_not_confirmed = :invoice_id
-               AND id_order = :order_id
-             ORDER BY id DESC LIMIT 1"
-        );
-        $stmt->execute([':invoice_id' => $invoiceId, ':order_id' => $orderId]);
-    } elseif ($invoiceId !== '') {
-        $stmt = $pdo->prepare(
-            "SELECT * FROM Payment_report
-             WHERE Payment_Method = 'nowpayment' AND dec_not_confirmed = :invoice_id
-             ORDER BY id DESC LIMIT 1"
-        );
-        $stmt->execute([':invoice_id' => $invoiceId]);
-    } elseif ($orderId !== '') {
-        $stmt = $pdo->prepare(
-            "SELECT * FROM Payment_report
-             WHERE Payment_Method = 'nowpayment' AND id_order = :order_id
-             ORDER BY id DESC LIMIT 1"
-        );
-        $stmt->execute([':order_id' => $orderId]);
-    } else {
-        return false;
-    }
-    return $stmt->fetch(PDO::FETCH_ASSOC);
-}
-
 $rawPayload = file_get_contents('php://input');
 $payload = json_decode((string) $rawPayload, true);
 if (!is_array($payload) || empty($payload['payment_id'])) {
     nowPaymentsCallbackResponse(400, 'Invalid payload');
 }
 
-$paymentId = (string) $payload['payment_id'];
-if (!preg_match('/^\d{1,30}$/', $paymentId)) {
-    nowPaymentsCallbackResponse(400, 'Invalid payment id');
-}
-
-$payloadInvoiceId = trim((string) ($payload['invoice_id'] ?? ''));
-$payloadOrderId = trim((string) ($payload['order_id'] ?? ''));
-$paymentReport = nowPaymentsFindPaymentReport($pdo, $payloadInvoiceId, $payloadOrderId);
-$resellerOwner = $paymentReport ? resellerPaymentOwnerData($paymentReport) : null;
-if ($paymentReport && !empty($paymentReport['bottype'])) {
-    if (!$resellerOwner) {
-        nowPaymentsCallbackResponse(404, 'Reseller bot not found');
-    }
-    $ipnSecret = (string) $resellerOwner['settings']['payment_gateways']['nowpayments']['ipn_secret'];
-} else {
-    $ipnSecret = (string) (select('PaySetting', 'ValuePay', 'NamePay', 'nowpayment_ipn_secret', 'select')['ValuePay'] ?? '');
-}
+$ipnSecret = (string) (select('PaySetting', 'ValuePay', 'NamePay', 'nowpayment_ipn_secret', 'select')['ValuePay'] ?? '');
 if ($ipnSecret !== '' && $ipnSecret !== '0') {
     $receivedSignature = strtolower(trim((string) ($_SERVER['HTTP_X_NOWPAYMENTS_SIG'] ?? '')));
     if ($receivedSignature === '') {
@@ -107,11 +58,12 @@ if (($payload['payment_status'] ?? '') !== 'finished') {
     nowPaymentsCallbackResponse(202, 'Payment is not finished');
 }
 
-if ($paymentReport && !empty($paymentReport['bottype'])) {
-    $providerPayment = resellerGetNowPaymentsStatus($resellerOwner['settings'], $paymentId);
-} else {
-    $providerPayment = StatusPayment($paymentId);
+$paymentId = (string) $payload['payment_id'];
+if (!preg_match('/^\d{1,30}$/', $paymentId)) {
+    nowPaymentsCallbackResponse(400, 'Invalid payment id');
 }
+
+$providerPayment = StatusPayment($paymentId);
 if (!is_array($providerPayment) || empty($providerPayment['payment_id'])) {
     error_log('NOWPayments status lookup failed for payment ' . $paymentId);
     nowPaymentsCallbackResponse(502, 'Unable to verify payment');
@@ -129,11 +81,30 @@ if ($invoiceId === '' && $orderId === '') {
     nowPaymentsCallbackResponse(400, 'Missing invoice reference');
 }
 
-$verifiedPaymentReport = nowPaymentsFindPaymentReport($pdo, $invoiceId, $orderId);
-if ($paymentReport && $verifiedPaymentReport && (string) $paymentReport['id'] !== (string) $verifiedPaymentReport['id']) {
-    nowPaymentsCallbackResponse(400, 'Payment reference mismatch');
+if ($invoiceId !== '' && $orderId !== '') {
+    $stmt = $pdo->prepare(
+        "SELECT * FROM Payment_report
+         WHERE Payment_Method = 'nowpayment'
+           AND (dec_not_confirmed = :invoice_id OR id_order = :order_id)
+         ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->execute([':invoice_id' => $invoiceId, ':order_id' => $orderId]);
+} elseif ($invoiceId !== '') {
+    $stmt = $pdo->prepare(
+        "SELECT * FROM Payment_report
+         WHERE Payment_Method = 'nowpayment' AND dec_not_confirmed = :invoice_id
+         ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->execute([':invoice_id' => $invoiceId]);
+} else {
+    $stmt = $pdo->prepare(
+        "SELECT * FROM Payment_report
+         WHERE Payment_Method = 'nowpayment' AND id_order = :order_id
+         ORDER BY id DESC LIMIT 1"
+    );
+    $stmt->execute([':order_id' => $orderId]);
 }
-$paymentReport = $verifiedPaymentReport ?: $paymentReport;
+$paymentReport = $stmt->fetch(PDO::FETCH_ASSOC);
 if (!$paymentReport) {
     nowPaymentsCallbackResponse(404, 'Payment report not found');
 }
