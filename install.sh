@@ -214,7 +214,7 @@ _link_mirza() {
 function self_update_script() {
     local MASTER_PATH="/root/install.sh"
     local BIN_LINK="/usr/local/bin/mirza"
-    local URL="https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh"
+    local URL="https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh"
     local TEMP_FILE="/tmp/mirzabot_update.sh"
 
     # Make sure DNS works before reaching GitHub
@@ -283,7 +283,7 @@ function self_update_script() {
 # ── Repo / paths ─────────────────────────────────────────────
 BOT_DIR_DEFAULT="/var/www/html/mirzaprobotconfig"
 CONFIG_FILE_DEFAULT="$BOT_DIR_DEFAULT/config.php"
-GIT_REPO="TheRealMr404/TheRealBot"
+GIT_REPO="TheRealMr404/TheRealBot-Premium"
 LATEST_CACHE="/tmp/.mirza_latest_version"
 IP_CACHE="/tmp/.mirza_server_ip"
 
@@ -300,7 +300,7 @@ install_bot_auto_updater() {
 #!/bin/bash
 set -Eeuo pipefail
 
-ZIP_URL="https://github.com/TheRealMr404/TheRealBot/archive/refs/heads/main.zip"
+ZIP_URL="https://github.com/TheRealMr404/TheRealBot-Premium/archive/refs/heads/main.zip"
 WEB_ROOT="/var/www/html"
 
 for cmd in awk basename curl cut dirname find flock grep php readlink rsync sha256sum tar tr unzip; do
@@ -3378,7 +3378,7 @@ function migrate_to_pro() {
     NEW_BOT_DIR="/var/www/html/mirzaprobotconfig"
     rm -rf "$OLD_BOT_DIR"
     mkdir -p "$NEW_BOT_DIR"
-    ZIP_URL="https://github.com/TheRealMr404/TheRealBot/archive/refs/heads/main.zip"
+    ZIP_URL="https://github.com/TheRealMr404/TheRealBot-Premium/archive/refs/heads/main.zip"
     TEMP_DIR="/tmp/mirzabot_mig"
     mkdir -p "$TEMP_DIR"
     run_step "Downloading Mirza source" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \

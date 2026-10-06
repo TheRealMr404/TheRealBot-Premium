@@ -1,138 +1,276 @@
-# 🤖 Bot 404 Panel
+# TheRealBot Premium
 
-A Powerful Bot for Selling VPN Services with Auto Configuration Build.
+ربات فروش و مدیریت خودکار سرویس‌های شبکه، محصولات مجازی و ربات‌های نمایندگی، نوشته‌شده با PHP و سازگار با چندین پنل مدیریتی.
 
-<p align="center">
-    <a href="https://t.me/404panel" target="_blank">
-        <img src="https://img.shields.io/badge/Telegram-Group-blue?style=flat-square&logo=telegram" alt="Telegram Group"/>
-    </a>
-    <a href="https://github.com/TheRealMr404/TheRealBot" target="_blank">
-        <img src="https://img.shields.io/github/stars/TheRealMr404/TheRealBot?style=social" alt="GitHub Stars"/>
-    </a>
-    <a href="https://img.shields.io/github/forks/TheRealMr404/TheRealBot?style=flat-square" target="_blank">
-        <img src="https://img.shields.io/github/forks/TheRealMr404/TheRealBot?style=flat-square" alt="GitHub Forks"/>
-    </a>
-    <a href="https://github.com/TheRealMr404/TheRealBot/issues" target="_blank">
-        <img src="https://img.shields.io/github/issues/TheRealMr404/TheRealBot?style=flat-square" alt="GitHub Issues"/>
-    </a>
-</p>
+[![PHP](https://img.shields.io/badge/PHP-8.2-777BB4?logo=php&logoColor=white)](https://www.php.net/)
+[![License](https://img.shields.io/github/license/TheRealMr404/TheRealBot-Premium)](https://github.com/TheRealMr404/TheRealBot-Premium/blob/main/LICENSE)
+[![Latest release](https://img.shields.io/github/v/release/TheRealMr404/TheRealBot-Premium?display_name=tag)](https://github.com/TheRealMr404/TheRealBot-Premium/releases)
+[![Telegram](https://img.shields.io/badge/Telegram-404panel-26A5E4?logo=telegram&logoColor=white)](https://t.me/404panel)
 
----
+> این پروژه نسخه Premium ربات TheRealBot است. تمام لینک‌های نصب، بروزرسانی و دریافت سورس در این راهنما به مخزن `TheRealMr404/TheRealBot-Premium` اشاره می‌کنند.
 
-## 📚 Table of Contents
+## فهرست مطالب
 
-* [✨ Overview](#-overview)
-* [⚙️ Features](#️-features)
-* [🚀 Installation](#-installation)
+- [امکانات اصلی](#features)
+- [پنل‌های پشتیبانی‌شده](#panels)
+- [درگاه‌های پرداخت](#payments)
+- [پیش‌نیازها](#requirements)
+- [نصب](#installation)
+- [بروزرسانی](#update)
+- [فروش خودکار Stars و Premium](#fragment)
+- [امنیت](#security)
+- [رفع اشکال](#troubleshooting)
+- [پشتیبانی و مجوز](#support)
 
-  * [Beta Installation](#️-beta-installation)
-  * [Updating the Bot](#-updating-bot)
-  * [Removing the Bot](#-removing)
-* [💵 Financial Support](#-financial-support)
+<a id="features"></a>
+## امکانات اصلی
 
----
+### فروش و مدیریت سرویس
 
-## ✨ Overview
+- فروش خودکار سرویس از پلن‌های تعریف‌شده در پنل مدیریت
+- سرویس دلخواه با تعیین حجم، زمان و تعداد سفارش
+- ساخت سرویس تست با محدودیت‌های مستقل
+- تمدید، افزایش حجم، مشاهده وضعیت و دریافت مجدد اطلاعات سرویس
+- تحویل لینک اشتراک، QR Code و فایل‌های قابل دریافت مانند WireGuard و OpenVPN در صورت پشتیبانی پنل
+- کیف پول داخلی، ثبت تراکنش‌ها، گزارش پرداخت و تاریخچه سفارش‌ها
+- کد تخفیف، سیستم دعوت، امتیاز و وفاداری
+- اعلان‌های مدیریتی، گزارش فروش و آمار بازه‌ای
+- مدیریت کاربران، مسدودسازی، پیام همگانی و عضویت اجباری
 
-**404 Bot** is a feature-rich Telegram bot designed for selling VPN services for platforms like **Marzban**, **3x-ui panels**, **Alireza panels**, **Pasarguard**, **IBSng** and more.
+### خدمات مجازی
 
-404 Panel comes in two versions:
+- ساختار چندمرحله‌ای `دسته‌بندی ← محصول ← پلن`
+- محصولات دستی، مخزنی، فرم‌دار و خودکار
+- دریافت اطلاعات لازم از خریدار با فرم اختصاصی هر محصول
+- مدیریت موجودی، قوانین خرید، گارانتی و ارسال مجدد
+- شخصی‌سازی متن، ایموجی، رنگ و ترتیب نمایش
+- گزارش خریدها در تاپیک اختصاصی گروه مدیریت
+- فروش خودکار Telegram Stars و Telegram Premium از طریق ماژول Fragment
 
-1. **Free Version** 🆓
-2. **Subscription Version** 💎
+### پنل مدیریت و رابط کاربری
 
-Whether you’re offering trial accounts or managing large-scale VPN services, this bot covers everything you need to run a successful VPN business.
+- پنل مدیریت کامل داخل تلگرام
+- Mini App برای تجربه کاربری سریع‌تر
+- پنل مدیریتی تحت وب در مسیر `/panel/`
+- API داخلی برای ارتباط بخش‌های وب و ربات
+- شخصی‌سازی دکمه‌ها، متن‌ها، ایموجی‌های Premium و ترتیب نمایش
+- بکاپ، بروزرسانی، Cron Job و بررسی سلامت سرویس‌ها از طریق نصب‌کننده
 
----
+### ربات نمایندگی
 
-## ⚙️ Features
+- ساخت و مدیریت ربات فروش برای نمایندگان
+- حفظ وابستگی مدیریتی به ربات اصلی در کنار تنظیمات مستقل نماینده
+- درگاه‌ها و تنظیمات پرداخت مستقل
+- شخصی‌سازی عنوان‌ها، دکمه‌ها، اعلان‌ها و اطلاعات فروشگاه
+- مدیریت سرویس‌ها، مشتریان و گزارش‌های مالی نماینده
 
-### 🔹 Free Version Features
+<a id="panels"></a>
+## پنل‌های پشتیبانی‌شده
 
-* ✅ VPN Purchase with Auto Configuration Creation
-* ✅ View Purchased Services
-* ✅ Trial Accounts for Users
-* ✅ User Support Section
-* ✅ Verification via Phone Number
-* ✅ Payments via:
+این سورس برای اتصال به پنل‌های زیر ماژول اختصاصی دارد:
 
-  * Card-to-Card
-  * NowPayments Gateway
-  * Aqayepardakht Gateway
-* ✅ Fully Automated Configuration Creation
-* ✅ Compatibility with All Protocols
-* ✅ Mandatory Channel Membership for Purchases
-* ✅ Detailed Purchase and Trial Account Reports
-* ✅ Tutorial Section with Admin-Customizable Content
-* ✅ Balance Management via Admin Panel
-* ✅ Multiple Admin Support
-* ✅ Service Renewals
-* ✅ Additional Volume Purchases
-* ✅ Configuration Retrieval
-* ✅ Updating Service Links
-* ✅ FAQ Section
-* ✅ Product and Panel Management
-* ✅ Gateway Management
+| پنل | کاربرد |
+| --- | --- |
+| Marzban | فروش و مدیریت کانفیگ و اشتراک |
+| 3x-ui / X-UI | فروش سرویس‌های مبتنی بر Xray |
+| Sanaei | پشتیبانی از ساختار نسخه‌های قدیمی و جدید |
+| Marzneshin | ساخت و مدیریت سرویس |
+| Hiddify | فروش و تحویل اشتراک |
+| Pasarguard | فروش کانفیگ و فروش پنل نمایندگی |
+| Rebecca | تحویل پروتکل‌ها، لینک اشتراک و فایل‌های موجود در Subscription |
+| WGDashboard | ساخت و تحویل سرویس WireGuard |
+| S-UI | مدیریت سرویس‌های سازگار با پنل |
+| MikroTik | ساخت و مدیریت کاربران شبکه |
+| IBSng | مدیریت کاربران و سرویس‌ها |
+| Alireza Single | اتصال به پنل تک‌سرور مربوطه |
 
----
+> قابلیت‌های دقیق مانند تمدید، فایل کانفیگ یا تست، به API و نسخه پنل مقصد وابسته است. پیش از فروش عمومی، اتصال و چرخه خرید هر پنل را با یک سفارش آزمایشی بررسی کنید.
 
-### 🔹 Premium Version Features
+<a id="payments"></a>
+## درگاه‌های پرداخت
 
-In addition to the features of the Free Version.
+ماژول‌های پرداخت موجود در سورس شامل موارد زیر هستند:
 
-📌 Premium Guide:
+- کارت‌به‌کارت و پرداخت آفلاین
+- زرین‌پال
+- آقای پرداخت
+- NOWPayments
+- TetraPay
+- Tronado
+- CubePay
+- IranPay
 
-https://t.me/404premium
+درگاه‌ها را می‌توان از پنل مدیریت فعال یا غیرفعال کرد و نام نمایشی، ایموجی، رنگ و ترتیب آن‌ها را تغییر داد. تنها درگاه‌های فعال برای کاربر نمایش داده می‌شوند.
 
----
+<a id="requirements"></a>
+## پیش‌نیازها
 
-## 🚀 Installation
+- سرور تازه با `Ubuntu 22.04` یا `Ubuntu 24.04`
+- دسترسی `root` یا کاربری با مجوز `sudo`
+- دامنه یا زیردامنه با رکورد `A` متصل به IP سرور
+- باز بودن پورت‌های `80` و `443`
+- توکن ربات از [BotFather](https://t.me/BotFather)
+- شناسه عددی مدیر ربات
+- حداقل 1 گیگابایت RAM؛ برای چند ربات یا قابلیت Fragment حداقل 2 گیگابایت پیشنهاد می‌شود
 
-### Prerequisites
+نصب‌کننده، بسته‌های لازم مانند Apache، PHP 8.2، MySQL، SSL، Cron و وابستگی‌های موردنیاز ماژول Fragment را نصب و تنظیم می‌کند.
 
-Ensure you have:
+<a id="installation"></a>
+## نصب
 
-* Ubuntu Server 22/24
-* Domain Name
+### 1. تنظیم دامنه
 
-### 🔧 Stable Installation
+پیش از نصب، یک رکورد `A` برای دامنه ربات بسازید و آن را به IP سرور متصل کنید. اگر از Cloudflare استفاده می‌کنید، هنگام صدور اولیه SSL حالت Proxy را موقتاً خاموش و رکورد را روی `DNS only` قرار دهید.
+
+### 2. اجرای نصب‌کننده
+
+با کاربر `root` وارد سرور شوید و دستورهای زیر را اجرا کنید:
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh && bash install.sh
+sudo -i
+curl -fsSL https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh -o /root/install.sh
+chmod +x /root/install.sh
+bash /root/install.sh
 ```
 
-Select option **1** to install.
+در منوی نصب، گزینه `Install Mirza` را انتخاب کنید. نصب‌کننده اطلاعات لازم را مرحله‌به‌مرحله دریافت می‌کند؛ نیازی به قراردادن توکن، رمز دیتابیس یا سایر اطلاعات حساس داخل سورس نیست.
 
----
+### 3. بررسی نصب
 
-## 🔄 Updating Bot
+پس از پایان نصب موارد زیر را بررسی کنید:
+
+1. دامنه ربات با HTTPS بدون خطای گواهی باز شود.
+2. Webhook تلگرام روی آدرس صحیح `https://YOUR-DOMAIN/index.php` تنظیم شده باشد.
+3. با ارسال `/start` ربات پاسخ دهد.
+4. پنل مدیریت تلگرام و Mini App باز شوند.
+5. Cron Jobها فعال باشند.
+
+مسیرهای متداول پس از نصب:
+
+| بخش | آدرس |
+| --- | --- |
+| Webhook ربات | `https://YOUR-DOMAIN/index.php` |
+| Mini App | `https://YOUR-DOMAIN/app/` |
+| پنل تحت وب | `https://YOUR-DOMAIN/panel/` |
+| phpMyAdmin | `https://YOUR-DOMAIN/phpmyadmin/` |
+
+### نصب چند ربات با Docker
+
+نصب‌کننده یک مدیر چندرباته Docker نیز دارد. از منوی اصلی گزینه `Docker multi-bot manager` را انتخاب کنید. امکانات آن شامل نصب ایزوله، فهرست ربات‌ها، بروزرسانی تکی، بکاپ، بازیابی، بکاپ زمان‌بندی‌شده، مشاهده لاگ و حذف امن هر ربات است.
+
+استفاده از Docker اختیاری است؛ نصب معمولی برای یک ربات به Docker نیاز ندارد.
+
+<a id="update"></a>
+## بروزرسانی
+
+همیشه پیش از بروزرسانی از فایل‌ها و دیتابیس بکاپ بگیرید. سپس نصب‌کننده را از همین مخزن دریافت کنید:
 
 ```bash
-curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh && bash install.sh
+sudo -i
+curl -fsSL https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh -o /root/install.sh
+chmod +x /root/install.sh
+bash /root/install.sh
 ```
 
-Select option **Update**.
+در منو گزینه `Update Mirza` را انتخاب کنید. نصب‌کننده مسیر ربات، نسخه و وضعیت بروزرسانی را مدیریت می‌کند. در نصب‌های چندرباته، بروزرسانی را برای نمونه موردنظر اجرا کنید و پس از پایان، Webhook و Cron همان نمونه را بررسی کنید.
 
----
+<a id="fragment"></a>
+## فروش خودکار Stars و Premium
 
-## ❌ Removing Bot
+ماژول Fragment در بخش خدمات مجازی قرار دارد و برای خرید خودکار Telegram Stars و Telegram Premium طراحی شده است. تنظیمات این بخش از پنل مدیریت انجام می‌شود و کاربر نهایی نیازی به ویرایش فایل‌ها ندارد.
 
-```bash
-curl -o install.sh -L https://raw.githubusercontent.com/TheRealMr404/TheRealBot/main/install.sh && bash install.sh
+روند پیشنهادی راه‌اندازی:
+
+1. از پنل مدیریت وارد `خدمات مجازی` و سپس `اتصال Fragment` شوید.
+2. روش ورود تلگرام را اجرا کنید تا نشست Fragment ثبت شود.
+3. کیف پول TON و نسخه قرارداد کیف پول را تنظیم کنید.
+4. در صورت نیاز کلید TON Center را ثبت کنید.
+5. اتصال Fragment و موجودی کیف پول را آزمایش کنید.
+6. محصولات و پلن‌های Stars و Premium را بسازید.
+7. ابتدا حالت آزمایشی را بررسی و سپس فروش واقعی را فعال کنید.
+
+اطلاعات حساس این ماژول نباید در Git ثبت شوند. نشست، کلیدها و اطلاعات کیف پول را فقط از بخش مدیریت وارد کنید و دسترسی فایل‌های ذخیره‌سازی آن را محدود نگه دارید.
+
+> ارتباط با Fragment بر پایه رابط‌های غیررسمی وب انجام می‌شود و API رسمی و تضمین‌شده‌ای برای این گردش کار وجود ندارد. تغییرات Fragment، محدودیت حساب، تأیید دومرحله‌ای، ظرفیت کیف پول یا خطای شبکه می‌توانند سفارش را متوقف کنند. برای سفارش‌ها وضعیت قابل پیگیری، لاگ و فرایند بازبینی دستی در نظر بگیرید و ابتدا با مبالغ کم آزمایش کنید.
+
+## ساختار پروژه
+
+```text
+.
+├── index.php                    # ورودی اصلی Webhook
+├── admin.php                    # پنل مدیریت تلگرام
+├── function.php                 # توابع مشترک
+├── keyboard.php                 # کیبوردها و منوها
+├── table.php                    # ساخت و ارتقای جداول دیتابیس
+├── app/                         # Mini App
+├── api/                         # API داخلی
+├── panel/                       # پنل مدیریت تحت وب
+├── payment/                     # ماژول‌های درگاه پرداخت
+├── vpnbot/                      # امکانات ربات نمایندگی
+├── cronbot/                     # پردازش‌های زمان‌بندی‌شده
+├── fragment-kit/                # ابزارهای اتصال مستقیم Fragment
+├── services/fragment-signer/    # سرویس امضای تراکنش TON
+├── telegram_products.php        # خدمات مجازی سمت کاربر
+├── telegram_products_admin.php  # مدیریت خدمات مجازی
+└── install.sh                   # نصب، بروزرسانی و نگهداری
 ```
 
-Select option **3**.
+<a id="security"></a>
+## امنیت
 
----
+- این پروژه را فقط از مخزن رسمی دریافت کنید.
+- توکن ربات، رمز دیتابیس، Seed Phrase، Cookie و API Key را در Git یا پیام‌های عمومی قرار ندهید.
+- برای MySQL، پنل‌های مقصد و پنل وب رمزهای قوی و متفاوت بسازید.
+- دسترسی phpMyAdmin را با محدودیت IP یا لایه احراز هویت اضافی محافظت کنید.
+- از فایل‌ها و دیتابیس بکاپ رمزگذاری‌شده و منظم بگیرید.
+- سیستم‌عامل و بسته‌ها را بروزرسانی و پورت‌های غیرضروری را در Firewall مسدود کنید.
+- Seed Phrase کیف پول اصلی را برای فروش خودکار استفاده نکنید؛ یک کیف پول عملیاتی با موجودی محدود بسازید.
+- پس از هر بروزرسانی، SSL، Webhook، Cron، اتصال دیتابیس و یک خرید آزمایشی را بررسی کنید.
+- فایل‌های لاگ ممکن است شامل اطلاعات عملیاتی باشند؛ آن‌ها را عمومی نکنید و دوره نگهداری مشخص داشته باشید.
 
-## 💵 Financial Support
+<a id="troubleshooting"></a>
+## رفع اشکال
 
-If you find **404 Panel** useful and would like to support development:
+### ربات پاسخ نمی‌دهد
 
-https://nowpayments.io/donation/404premium
+- صحت توکن و شناسه مدیر را بررسی کنید.
+- دامنه باید از اینترنت و با HTTPS معتبر در دسترس باشد.
+- وضعیت Webhook را بررسی و در صورت نیاز از پنل یا نصب‌کننده مجدداً تنظیم کنید.
+- فایل `error_log` وب‌سرور و لاگ PHP را بررسی کنید.
 
-Your support helps keep the project updated and maintained.
+### خطای SSL یا Webhook
 
-### Contributors
+- رکورد `A` دامنه باید به IP همین سرور اشاره کند.
+- پورت‌های `80` و `443` باید آزاد و در Firewall باز باشند.
+- هنگام صدور گواهی، Proxy کلادفلر را موقتاً غیرفعال کنید.
+- پس از بازسازی SSL، Webhook را دوباره تنظیم کنید.
 
-![Contributors](https://contrib.rocks/image?repo=TheRealMr404/TheRealBot)
+### خطای اتصال دیتابیس
+
+- وضعیت سرویس MySQL و فضای دیسک را بررسی کنید.
+- مشخصات اتصال هر ربات باید به دیتابیس همان نمونه اشاره کند.
+- از ساخت اتصال جدید داخل حلقه‌ها یا Cronهای پرتکرار خودداری کنید و اتصال را پس از پایان پردازش آزاد کنید.
+
+### سفارش Fragment در حالت پردازش می‌ماند
+
+- نشست Fragment، موجودی کیف پول و کلید TON RPC را بررسی کنید.
+- سرویس `fragment-signer` و Cron سفارش‌ها باید فعال باشند.
+- ورود تلگرام یا Cookie منقضی‌شده را تمدید کنید.
+- سفارش ناموفق را بدون اطمینان از ثبت‌نشدن تراکنش دوباره اجرا نکنید.
+
+## مشارکت
+
+گزارش خطا و پیشنهاد قابلیت را از بخش [Issues](https://github.com/TheRealMr404/TheRealBot-Premium/issues) ثبت کنید. در گزارش، نسخه ربات، نسخه PHP، نام پنل و بخش مرتبط از لاگ را بدون اطلاعات حساس قرار دهید.
+
+فهرست مشارکت‌کنندگان در صفحه [Contributors](https://github.com/TheRealMr404/TheRealBot-Premium/graphs/contributors) در دسترس است.
+
+<a id="support"></a>
+## پشتیبانی و مجوز
+
+- کانال پروژه: [@404panel](https://t.me/404panel)
+- راهنمای نسخه Premium: [@404premium](https://t.me/404premium)
+- مخزن رسمی: [TheRealMr404/TheRealBot-Premium](https://github.com/TheRealMr404/TheRealBot-Premium)
+
+این پروژه تحت مجوز [GNU AGPL-3.0](https://github.com/TheRealMr404/TheRealBot-Premium/blob/main/LICENSE) منتشر شده است. در صورت انتشار نسخه تغییر‌یافته یا ارائه آن به‌صورت سرویس شبکه، الزامات این مجوز را رعایت کنید.
+
+این پروژه وابسته یا مورد تأیید رسمی Telegram، Fragment، TON Foundation یا ارائه‌دهندگان پنل‌ها و درگاه‌های نام‌برده نیست. مسئولیت رعایت قوانین محلی، شرایط استفاده سرویس‌ها، نگهداری امن اطلاعات و تراکنش‌های مالی بر عهده بهره‌بردار است.
