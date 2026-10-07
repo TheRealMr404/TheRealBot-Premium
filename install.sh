@@ -5,6 +5,18 @@ if [[ $EUID -ne 0 ]]; then
     exit 1
 fi
 
+# Official Premium source. Environment overrides are useful for mirrors and
+# private test forks, but invalid values always fall back to the official repo.
+MIRZA_GIT_REPO="${MIRZA_GIT_REPO:-TheRealMr404/TheRealBot-Premium}"
+MIRZA_GIT_BRANCH="${MIRZA_GIT_BRANCH:-main}"
+MIRZA_INSTALLER_SCHEMA=2
+if ! [[ "$MIRZA_GIT_REPO" =~ ^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$ ]]; then
+    MIRZA_GIT_REPO="TheRealMr404/TheRealBot-Premium"
+fi
+if ! [[ "$MIRZA_GIT_BRANCH" =~ ^[A-Za-z0-9._/-]+$ ]]; then
+    MIRZA_GIT_BRANCH="main"
+fi
+
 INSTALL_LOG="/tmp/mirza_install.log"
 
 export DEBIAN_FRONTEND=noninteractive
@@ -214,7 +226,7 @@ _link_mirza() {
 function self_update_script() {
     local MASTER_PATH="/root/install.sh"
     local BIN_LINK="/usr/local/bin/mirza"
-    local URL="https://raw.githubusercontent.com/TheRealMr404/TheRealBot-Premium/main/install.sh"
+    local URL="https://raw.githubusercontent.com/${MIRZA_GIT_REPO}/${MIRZA_GIT_BRANCH}/install.sh"
     local TEMP_FILE="/tmp/mirzabot_update.sh"
 
     # Make sure DNS works before reaching GitHub
@@ -232,17 +244,27 @@ function self_update_script() {
     local valid=0
     if [ -s "$TEMP_FILE" ] \
        && head -n1 "$TEMP_FILE" | grep -q '^#!/bin/bash' \
+       && grep -q '^MIRZA_INSTALLER_SCHEMA=2$' "$TEMP_FILE" \
+       && grep -q 'TheRealMr404/TheRealBot-Premium' "$TEMP_FILE" \
        && grep -q 'process_arguments' "$TEMP_FILE" \
        && bash -n "$TEMP_FILE" 2>/dev/null; then
         valid=1
     fi
 
     if [ "$valid" -ne 1 ]; then
-        echo -e "\e[91mWarning: could not fetch a valid update (offline / bad download). Using current version.\033[0m"
+        echo -e "\e[93mWarning: the remote installer is unavailable, older, or incompatible. Using the current version.\033[0m"
         rm -f "$TEMP_FILE"
         if [ ! -f "$MASTER_PATH" ]; then
-            echo -e "\e[91mCritical: cannot install the script for the first time without internet.\033[0m"
-            exit 1
+            local CURRENT_SCRIPT
+            CURRENT_SCRIPT=$(readlink -f "${BASH_SOURCE[0]}" 2>/dev/null || true)
+            if [ -n "$CURRENT_SCRIPT" ] && [ -f "$CURRENT_SCRIPT" ] \
+               && grep -q '^MIRZA_INSTALLER_SCHEMA=2$' "$CURRENT_SCRIPT" \
+               && bash -n "$CURRENT_SCRIPT" 2>/dev/null; then
+                install -m 0755 "$CURRENT_SCRIPT" "$MASTER_PATH"
+            else
+                echo -e "\e[91mCritical: no valid local installer is available.\033[0m"
+                exit 1
+            fi
         fi
         _link_mirza "$MASTER_PATH" "$BIN_LINK"
         return 0
@@ -250,11 +272,11 @@ function self_update_script() {
 
     local LOCAL_HASH REMOTE_HASH
     if [ -f "$MASTER_PATH" ]; then
-        LOCAL_HASH=$(md5sum "$MASTER_PATH" | awk '{print $1}')
+        LOCAL_HASH=$(sha256sum "$MASTER_PATH" | awk '{print $1}')
     else
         LOCAL_HASH="not_installed"
     fi
-    REMOTE_HASH=$(md5sum "$TEMP_FILE" | awk '{print $1}')
+    REMOTE_HASH=$(sha256sum "$TEMP_FILE" | awk '{print $1}')
 
     if [ "$LOCAL_HASH" != "$REMOTE_HASH" ]; then
         if [ "$LOCAL_HASH" = "not_installed" ]; then
@@ -275,15 +297,22 @@ function self_update_script() {
     _link_mirza "$MASTER_PATH" "$BIN_LINK"
     echo -e "\e[32mScript is up to date.\033[0m"
 }
-# Custom build note:
-# Auto self-update is disabled so this edited installer is not overwritten by the upstream GitHub version.
-# To re-enable upstream auto-update, uncomment the next line.
-# self_update_script "$@"
+# Keep the management script aligned with the Premium repository. Set
+# MIRZA_SKIP_SELF_UPDATE=1 only for offline recovery or local development.
+if [ "${MIRZA_SKIP_SELF_UPDATE:-0}" != "1" ]; then
+    self_update_script "$@"
+else
+    if [ ! -f "/root/install.sh" ]; then
+        install -m 0755 "$(readlink -f "${BASH_SOURCE[0]}")" "/root/install.sh"
+    fi
+    _link_mirza "/root/install.sh" "/usr/local/bin/mirza"
+fi
 
 # ── Repo / paths ─────────────────────────────────────────────
 BOT_DIR_DEFAULT="/var/www/html/mirzaprobotconfig"
 CONFIG_FILE_DEFAULT="$BOT_DIR_DEFAULT/config.php"
-GIT_REPO="TheRealMr404/TheRealBot-Premium"
+GIT_REPO="$MIRZA_GIT_REPO"
+GIT_BRANCH="$MIRZA_GIT_BRANCH"
 LATEST_CACHE="/tmp/.mirza_latest_version"
 IP_CACHE="/tmp/.mirza_server_ip"
 
@@ -518,7 +547,7 @@ systemctl reload apache2
 if [ -x "$BOT_DIR/services/fragment-signer/install-service.sh" ]; then
     DB_NAME="$(php -r 'require $argv[1]; echo preg_replace("/[^A-Za-z0-9_.-]/", "", (string) $dbname);' "$BOT_DIR/config.php" 2>/dev/null || true)"
     [ -n "$DB_NAME" ] || DB_NAME=VpnBot
-    "$BOT_DIR/services/fragment-signer/install-service.sh" "$BOT_DIR" "$DB_NAME" >/dev/null 2>&1 || echo "FRAGMENT_SIGNER_WARNING"
+    "$BOT_DIR/services/fragment-signer/install-service.sh" "$BOT_DIR" "$DB_NAME" >/dev/null
 fi
 
 DEPLOY_STARTED=0
@@ -623,6 +652,31 @@ apt_recover() {
     return 0
 }
 export -f apt_recover
+
+# Fragment's TON libraries require Node.js >= 18. Ubuntu 22.04 can expose an
+# older distro package, so install the current NodeSource LTS only when needed.
+ensure_node_runtime() {
+    local major
+    major=$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)
+    if [ "$major" -ge 18 ] && command -v npm >/dev/null 2>&1; then
+        return 0
+    fi
+
+    apt-get install -y -o DPkg::Lock::Timeout=180 ca-certificates curl gnupg
+    install -m 0755 -d /etc/apt/keyrings
+    rm -f /etc/apt/keyrings/nodesource.gpg
+    curl -fsSL https://deb.nodesource.com/gpgkey/nodesource-repo.gpg.key \
+        | gpg --dearmor -o /etc/apt/keyrings/nodesource.gpg
+    chmod 0644 /etc/apt/keyrings/nodesource.gpg
+    echo "deb [signed-by=/etc/apt/keyrings/nodesource.gpg] https://deb.nodesource.com/node_20.x nodistro main" \
+        > /etc/apt/sources.list.d/nodesource.list
+    apt-get update -o DPkg::Lock::Timeout=180
+    DEBIAN_FRONTEND=noninteractive apt-get install -y -o DPkg::Lock::Timeout=180 nodejs
+
+    major=$(node -p "Number(process.versions.node.split('.')[0])" 2>/dev/null || echo 0)
+    [ "$major" -ge 18 ] && command -v npm >/dev/null 2>&1
+}
+export -f ensure_node_runtime
 
 # Configure MySQL root login (all output captured by run_step's log).
 setup_mysql_root() {
@@ -796,11 +850,11 @@ list_tags_desc() {
 
 # Choose which source to download.
 # Sets globals: SRC_ZIP_URL, SRC_LABEL
-# Honors flags ARG_CHANNEL (beta|release|auto) and ARG_VERSION (tag) for non-interactive use.
+# Honors flags ARG_CHANNEL (main|auto|release|stable) and ARG_VERSION (tag).
 # Returns: 0 = chosen, 1 = error, 2 = back to menu
 choose_source() {
     SRC_ZIP_URL=""; SRC_LABEL=""
-    local beta="https://github.com/${GIT_REPO}/archive/refs/heads/main.zip"
+    local main_source="https://github.com/${GIT_REPO}/archive/refs/heads/${GIT_BRANCH}.zip"
     local tagbase="https://github.com/${GIT_REPO}/archive/refs/tags"
 
     # ── Non-interactive (flags) ──────────────────────────────
@@ -816,11 +870,12 @@ choose_source() {
     fi
     if [ -n "$ARG_CHANNEL" ]; then
         case "$ARG_CHANNEL" in
-            beta|main)      SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"; return 0 ;;
-            release|auto|latest|stable)
+            main|beta|auto|latest)
+                SRC_ZIP_URL="$main_source"; SRC_LABEL="Premium (${GIT_BRANCH})"; return 0 ;;
+            release|stable)
                 local l; l=$(get_latest_version)
                 if [ -n "$l" ]; then SRC_ZIP_URL="${tagbase}/${l}.zip"; SRC_LABEL="Release ${l}";
-                else SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"; fi
+                else SRC_ZIP_URL="$main_source"; SRC_LABEL="Premium (${GIT_BRANCH})"; fi
                 return 0 ;;
             *) echo -e "    ${C_BAD}Unknown channel: ${ARG_CHANNEL}${CR}"; return 1 ;;
         esac
@@ -828,9 +883,9 @@ choose_source() {
 
     # ── Interactive ──────────────────────────────────────────
     _sec "Select version"
-    _mi "1" "Automatic  ${C_DIM}(latest stable release)${CR}"
-    _mi "2" "Choose a specific release version"
-    _mi "3" "Beta       ${C_DIM}(latest main branch - may be unstable)${CR}"
+    _mi "1" "Latest Premium  ${C_DIM}(${GIT_BRANCH} branch - recommended)${CR}"
+    _mi "2" "Latest stable release"
+    _mi "3" "Choose a specific release version"
     _mi "0" "Back to menu"
     echo ""
     printf "  ${C_PROMPT}❯${CR} Select ${C_DIM}[0-3]${CR}: "
@@ -838,14 +893,17 @@ choose_source() {
     case "$S" in
         0) return 2 ;;
         1)
+            SRC_ZIP_URL="$main_source"; SRC_LABEL="Premium (${GIT_BRANCH})"
+            return 0 ;;
+        2)
             local l; l=$(get_latest_version)
             if [ -n "$l" ]; then SRC_ZIP_URL="${tagbase}/${l}.zip"; SRC_LABEL="Release ${l}";
             else
-                echo -e "    ${C_WARN}Could not detect latest release; falling back to Beta.${CR}"
-                SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"
+                echo -e "    ${C_WARN}Could not detect a release; using ${GIT_BRANCH}.${CR}"
+                SRC_ZIP_URL="$main_source"; SRC_LABEL="Premium (${GIT_BRANCH})"
             fi
             return 0 ;;
-        2)
+        3)
             echo ""
             echo -e "  ${C_DIM}Fetching available versions...${CR}"
             local TAGS=(); mapfile -t TAGS < <(list_tags_desc)
@@ -870,10 +928,63 @@ choose_source() {
             local c="${TAGS[$((V-1))]}"
             SRC_ZIP_URL="${tagbase}/${c}.zip"; SRC_LABEL="Release ${c}"
             return 0 ;;
-        3) SRC_ZIP_URL="$beta"; SRC_LABEL="Beta (main)"; return 0 ;;
         *) echo -e "    ${C_BAD}Invalid selection.${CR}"; return 1 ;;
     esac
 }
+
+# Reject HTML/error downloads and incomplete repository archives before they
+# can replace a working installation. PHP linting also catches truncated files.
+validate_source_package() {
+    local source_dir="$1" required php_bin php_file
+    [ -n "$source_dir" ] && [ -d "$source_dir" ] || return 1
+
+    for required in index.php admin.php function.php keyboard.php table.php install.sh; do
+        if [ ! -s "$source_dir/$required" ]; then
+            echo "Missing required source file: $required" >&2
+            return 1
+        fi
+    done
+
+    bash -n "$source_dir/install.sh" || {
+        echo "The downloaded install.sh has invalid Bash syntax." >&2
+        return 1
+    }
+
+    php_bin="$(command -v php8.2 2>/dev/null || command -v php 2>/dev/null || true)"
+    [ -n "$php_bin" ] || {
+        echo "PHP CLI is unavailable; source validation cannot continue." >&2
+        return 1
+    }
+    while IFS= read -r -d '' php_file; do
+        "$php_bin" -l "$php_file" >/dev/null || {
+            echo "PHP syntax error: $php_file" >&2
+            return 1
+        }
+    done < <(find "$source_dir" -type f -name '*.php' -print0)
+}
+export -f validate_source_package
+
+# Install or refresh the local Fragment signer and its order-worker cron. The
+# service installer is idempotent, so this is safe after every bot update.
+sync_fragment_runtime() {
+    local bot_dir="$1" db_name="${2:-}" installer php_bin
+    installer="$bot_dir/services/fragment-signer/install-service.sh"
+    if [ ! -f "$installer" ]; then
+        echo "Fragment installer is not included in the selected source." >&2
+        return 2
+    fi
+
+    if [ -z "$db_name" ] && [ -f "$bot_dir/config.php" ]; then
+        php_bin="$(command -v php8.2 2>/dev/null || command -v php 2>/dev/null || true)"
+        if [ -n "$php_bin" ]; then
+            db_name=$("$php_bin" -r 'require $argv[1]; echo preg_replace("/[^A-Za-z0-9_.-]/", "", (string)($dbname ?? ""));' "$bot_dir/config.php" 2>/dev/null || true)
+        fi
+    fi
+    [ -n "$db_name" ] || db_name="VpnBot"
+    chmod +x "$installer"
+    "$installer" "$bot_dir" "$db_name"
+}
+export -f sync_fragment_runtime
 
 # Get public server IP, cached for 1 hour (falls back to local IP)
 get_server_ip() {
@@ -912,8 +1023,8 @@ version_section() {
     else
         _kv "Latest" "$(_dot warn) ${C_DIM}unknown (offline)${CR}"
     fi
-    _kv "Channel" "${C_DIM}t.me/mirzapanel${CR}"
-    _kv "Group" "${C_DIM}t.me/mirzapanelgroup${CR}"
+    _kv "Channel" "${C_DIM}t.me/404panel${CR}"
+    _kv "Premium guide" "${C_DIM}t.me/404premium${CR}"
 }
 
 bot_section() {
@@ -1430,14 +1541,16 @@ EOF
 }
 
 docker_source_url() {
-    if docker_local_source_dir >/dev/null 2>&1; then
-        printf 'local-managed://source'
-        return 0
+    if [ -n "${MIRZA_DOCKER_UPDATE_URL:-}" ]; then
+        case "$MIRZA_DOCKER_UPDATE_URL" in
+            https://*) printf '%s' "$MIRZA_DOCKER_UPDATE_URL"; return 0 ;;
+            *) echo "MIRZA_DOCKER_UPDATE_URL must use HTTPS." >&2; return 1 ;;
+        esac
     fi
     if [ -n "$ARG_VERSION" ]; then
         printf 'https://github.com/%s/archive/refs/tags/%s.zip' "$GIT_REPO" "$ARG_VERSION"
     else
-        printf 'https://github.com/%s/archive/refs/heads/main.zip' "$GIT_REPO"
+        printf 'https://github.com/%s/archive/refs/heads/%s.zip' "$GIT_REPO" "$GIT_BRANCH"
     fi
 }
 
@@ -1476,6 +1589,119 @@ docker_fetch_source() {
         rm -rf "$temp_dir"
     fi
     [ -f "$destination/index.php" ] && [ -f "$destination/table.php" ]
+}
+
+docker_write_container_updater() {
+    local dir="$1" source_url="$2"
+    [ -d "$dir" ] || return 1
+    case "$source_url" in
+        https://*) ;;
+        *) echo "Invalid Docker update URL: HTTPS is required." >&2; return 1 ;;
+    esac
+
+    {
+        printf '#!/bin/bash\n'
+        printf 'DEFAULT_SOURCE_URL=%q\n' "$source_url"
+        cat <<'CONTAINER_UPDATER'
+set -Eeuo pipefail
+
+# sudo removes most container environment variables. The embedded URL keeps
+# the updater functional without granting SETENV or Docker-socket access.
+SOURCE_URL="${MIRZA_SOURCE_URL:-}"
+case "$SOURCE_URL" in
+    https://*) ;;
+    *) SOURCE_URL="$DEFAULT_SOURCE_URL" ;;
+esac
+case "$SOURCE_URL" in
+    https://*) ;;
+    *) echo INVALID_UPDATE_SOURCE; exit 25 ;;
+esac
+
+for command_name in curl find flock php readlink rsync tar unzip; do
+    command -v "$command_name" >/dev/null 2>&1 || {
+        echo "MISSING_COMMAND:$command_name"
+        exit 21
+    }
+done
+
+if [ "${1:-}" = "--check" ]; then
+    echo UPDATE_READY
+    exit 0
+fi
+
+REQUESTED_BOT_DIR="${1:-/var/www/html}"
+BOT_DIR=$(readlink -f -- "$REQUESTED_BOT_DIR" 2>/dev/null || true)
+[ "$BOT_DIR" = "/var/www/html" ] || {
+    echo INVALID_BOT_DIRECTORY
+    exit 26
+}
+for required_file in index.php admin.php function.php config.php table.php; do
+    [ -f "$BOT_DIR/$required_file" ] || {
+        echo "INVALID_BOT_INSTALLATION:$required_file"
+        exit 27
+    }
+done
+
+TMP_DIR=$(mktemp -d /tmp/mirza-container-update.XXXXXX)
+BACKUP_DIR=/var/backups/therealbot
+LOCK_FILE=/run/lock/therealbot-update.lock
+STAMP=$(date +%Y%m%d_%H%M%S)
+BACKUP_FILE="$BACKUP_DIR/source_${STAMP}.tar.gz"
+DEPLOY_STARTED=0
+
+finish_update() {
+    local rc=$?
+    trap - EXIT
+    if [ "$rc" -ne 0 ] && [ "$DEPLOY_STARTED" -eq 1 ] && [ -s "$BACKUP_FILE" ]; then
+        find "$BOT_DIR" -mindepth 1 -maxdepth 1 -exec rm -rf -- {} +
+        tar -xzf "$BACKUP_FILE" -C "$BOT_DIR" || true
+        chown -R www-data:www-data "$BOT_DIR" || true
+        echo UPDATE_ROLLED_BACK
+    fi
+    rm -rf "$TMP_DIR"
+    exit "$rc"
+}
+trap finish_update EXIT
+
+exec 9>"$LOCK_FILE"
+if ! flock -n 9; then
+    echo UPDATE_ALREADY_RUNNING
+    exit 20
+fi
+
+mkdir -p "$BACKUP_DIR" "$TMP_DIR/extracted"
+curl -fL --retry 3 --connect-timeout 15 --max-time 240 "$SOURCE_URL" -o "$TMP_DIR/source.zip"
+unzip -q "$TMP_DIR/source.zip" -d "$TMP_DIR/extracted"
+SOURCE_DIR=$(find "$TMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
+[ -n "$SOURCE_DIR" ] && [ -d "$SOURCE_DIR" ] || exit 23
+for required_file in index.php admin.php function.php table.php; do
+    [ -s "$SOURCE_DIR/$required_file" ] || {
+        echo "INVALID_UPDATE_PACKAGE:$required_file"
+        exit 23
+    }
+done
+while IFS= read -r -d '' file; do
+    php -l "$file" >/dev/null
+done < <(find "$SOURCE_DIR" -type f -name '*.php' -print0)
+
+tar -czf "$BACKUP_FILE" -C "$BOT_DIR" .
+DEPLOY_STARTED=1
+rsync -a --delete --exclude='/config.php' --exclude='/error_log' "$SOURCE_DIR/" "$BOT_DIR/"
+chown -R www-data:www-data "$BOT_DIR"
+find "$BOT_DIR" -type d -exec chmod 755 {} +
+find "$BOT_DIR" -type f -exec chmod 644 {} +
+find "$BOT_DIR" -type f -name '*.sh' -exec chmod 755 {} +
+chmod 600 "$BOT_DIR/config.php"
+php -l "$BOT_DIR/index.php" >/dev/null
+php "$BOT_DIR/table.php" >/dev/null
+DEPLOY_STARTED=0
+
+find "$BACKUP_DIR" -maxdepth 1 -type f -name 'source_*.tar.gz' -printf '%T@ %p\n' \
+    | sort -rn | tail -n +6 | cut -d' ' -f2- | xargs -r rm -f
+echo UPDATE_SUCCESS
+CONTAINER_UPDATER
+    } > "$dir/container-update.sh"
+    chmod 0750 "$dir/container-update.sh"
 }
 
 docker_write_instance_files() {
@@ -1581,57 +1807,7 @@ EOF
     chown -R 1000:1000 "$dir/fragment-signer-data" 2>/dev/null || true
     chown -R 33:33 "$dir/fragment-php-data" 2>/dev/null || true
 
-    cat > "$dir/container-update.sh" <<'EOF'
-#!/bin/bash
-set -Eeuo pipefail
-SOURCE_URL="${MIRZA_SOURCE_URL:?missing source url}"
-REQUESTED_BOT_DIR="${1:-/var/www/html}"
-BOT_DIR=$(readlink -f -- "$REQUESTED_BOT_DIR" 2>/dev/null || true)
-[ "$BOT_DIR" = "/var/www/html" ] || {
-    echo INVALID_BOT_DIRECTORY
-    exit 26
-}
-for required_file in index.php config.php table.php; do
-    [ -f "$BOT_DIR/$required_file" ] || {
-        echo "INVALID_BOT_INSTALLATION:$required_file"
-        exit 27
-    }
-done
-TMP_DIR=$(mktemp -d /tmp/mirza-container-update.XXXXXX)
-BACKUP_DIR=/var/backups/therealbot
-LOCK_FILE=/run/lock/therealbot-update.lock
-command -v flock >/dev/null 2>&1 || {
-    echo MISSING_COMMAND:flock
-    exit 21
-}
-exec 9>"$LOCK_FILE"
-if ! flock -n 9; then
-    echo UPDATE_ALREADY_RUNNING
-    exit 20
-fi
-STAMP=$(date +%Y%m%d_%H%M%S)
-cleanup() { rm -rf "$TMP_DIR"; }
-trap cleanup EXIT
-case "$SOURCE_URL" in
-    local-managed://*)
-        echo "LOCAL_SOURCE_UPDATE_REQUIRES_HOST_MANAGER"
-        exit 25
-        ;;
-esac
-mkdir -p "$BACKUP_DIR"
-curl -fL --retry 3 --connect-timeout 15 --max-time 240 "$SOURCE_URL" -o "$TMP_DIR/source.zip"
-unzip -q "$TMP_DIR/source.zip" -d "$TMP_DIR/extracted"
-SOURCE_DIR=$(find "$TMP_DIR/extracted" -mindepth 1 -maxdepth 1 -type d | head -1)
-[ -f "$SOURCE_DIR/index.php" ] && [ -f "$SOURCE_DIR/table.php" ] || exit 23
-find "$SOURCE_DIR" -type f -name '*.php' -print0 | while IFS= read -r -d '' file; do php -l "$file" >/dev/null; done
-tar -czf "$BACKUP_DIR/source_${STAMP}.tar.gz" -C "$BOT_DIR" .
-rsync -a --delete --exclude='/config.php' --exclude='/error_log' "$SOURCE_DIR/" "$BOT_DIR/"
-chown -R www-data:www-data "$BOT_DIR"
-find "$BACKUP_DIR" -maxdepth 1 -type f -name 'source_*.tar.gz' -printf '%T@ %p\n' \
-    | sort -rn | tail -n +6 | cut -d' ' -f2- | xargs -r rm -f
-echo UPDATE_SUCCESS
-EOF
-    chmod 750 "$dir/container-update.sh"
+    docker_write_container_updater "$dir" "$source_url" || return 1
 
     cat > "$dir/compose.yml" <<EOF
 services:
@@ -2044,10 +2220,13 @@ docker_bot_restore() {
 }
 
 docker_bot_update() {
-    local slug="${1:-${ARG_ID:-}}" dir temp_dir config_backup image backup_path
+    local slug="${1:-${ARG_ID:-}}" dir temp_dir config_backup image backup_path update_url
     valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
     dir=$(docker_instance_dir "$slug") || return 1
     [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    update_url=$(docker_source_url) || return 1
+    docker_write_container_updater "$dir" "$update_url" \
+        || { echo "Failed to refresh the in-container updater."; return 1; }
     backup_path=$(docker_bot_backup "$slug") || { echo "Pre-update backup failed; update cancelled."; return 1; }
     temp_dir=$(mktemp -d /tmp/mirza-update.XXXXXX) || return 1
     mkdir -p "$temp_dir/app"
@@ -2091,6 +2270,33 @@ docker_bot_update() {
     response=$(curl -fsS -F "url=https://$domain/index.php" "https://api.telegram.org/bot$token/setWebhook" 2>/dev/null || true)
     echo "$response" | grep -q '"ok":true' || echo "Warning: webhook refresh failed."
     echo "Bot '$slug' updated successfully."
+}
+
+docker_bot_updater_refresh() {
+    local slug="${1:-${ARG_ID:-}}" dir container update_url check_output
+    valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
+    dir=$(docker_instance_dir "$slug") || return 1
+    [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    container="mirza-$slug-app"
+    docker inspect "$container" >/dev/null 2>&1 \
+        || { echo "Application container '$container' was not found."; return 1; }
+
+    update_url=$(docker_source_url) || return 1
+    docker_write_container_updater "$dir" "$update_url" || return 1
+    docker cp "$dir/container-update.sh" "$container:/usr/local/sbin/therealbot-update" >/dev/null \
+        || { echo "Failed to copy the updater into '$container'."; return 1; }
+    docker exec -u 0 "$container" sh -c \
+        'chown root:root /usr/local/sbin/therealbot-update && chmod 0750 /usr/local/sbin/therealbot-update' \
+        || return 1
+    check_output=$(docker exec -u www-data "$container" \
+        sudo -n /usr/local/sbin/therealbot-update --check 2>&1) || {
+            echo "$check_output"
+            echo "Docker bot updater self-check failed."
+            return 1
+        }
+    echo "$check_output" | grep -q '^UPDATE_READY$' \
+        || { echo "Unexpected updater self-check response."; return 1; }
+    echo "In-bot updater refreshed successfully for '$slug'."
 }
 
 docker_bot_schedule_backup() {
@@ -2171,6 +2377,7 @@ docker_manager_menu() {
         _mi "7" "Restart a bot"
         _mi "8" "View app logs"
         _mi "9" "Remove a bot"
+        _mi "10" "Repair in-bot update button"
         _mi "0" "Back"
         _rule; printf "  ${C_PROMPT}❯${CR} Select: "; read -r option
         case "$option" in
@@ -2183,6 +2390,7 @@ docker_manager_menu() {
             7) slug=$(docker_prompt_slug) && docker_bot_restart "$slug" ;;
             8) slug=$(docker_prompt_slug) && docker_bot_logs "$slug" ;;
             9) slug=$(docker_prompt_slug) && docker_bot_remove "$slug" ;;
+            10) slug=$(docker_prompt_slug) && docker_bot_updater_refresh "$slug" ;;
             0) show_menu; return ;;
             *) echo "Invalid option." ;;
         esac
@@ -2233,6 +2441,7 @@ function show_help_screen() {
     _kv "bot-add" "${C_DIM}Install a new isolated Docker bot${CR}"
     _kv "bot-list" "${C_DIM}List Docker bot instances${CR}"
     _kv "bot-update" "${C_DIM}Backup and update one Docker bot${CR}"
+    _kv "bot-updater-refresh" "${C_DIM}Repair the update button inside a Docker bot${CR}"
     _kv "bot-backup" "${C_DIM}Create app + database backup${CR}"
     _kv "bot-restore" "${C_DIM}Restore a backup into one bot${CR}"
     _kv "bot-remove" "${C_DIM}Backup and remove one Docker bot${CR}"
@@ -2250,8 +2459,8 @@ function show_help_screen() {
     _kv "--db-pass" "${C_DIM}Database password${CR}"
 
     _sec "Source parameters"
-    _kv "--version" "${C_DIM}Specific release tag (e.g. 0.1.7)${CR}"
-    _kv "--channel" "${C_DIM}beta | release | auto${CR}"
+    _kv "--version" "${C_DIM}Specific release tag (e.g. 2.0.0)${CR}"
+    _kv "--channel" "${C_DIM}main | auto | release | stable${CR}"
     _kv "--id" "${C_DIM}Docker instance id (e.g. shop1)${CR}"
     _kv "--backup" "${C_DIM}Backup archive used by add/restore${CR}"
     _kv "--schedule" "${C_DIM}daily | weekly | off${CR}"
@@ -2263,13 +2472,14 @@ function show_help_screen() {
     _sec "Examples"
     printf "    ${C_KEY}mirza install --channel auto${CR}\n"
     printf "    ${C_KEY}mirza install --name myvpnbot --token 123:ABC \\\\${CR}\n"
-    printf "    ${C_DIM}            --admin 111 --domain bot.example.com --version 0.1.7${CR}\n"
-    printf "    ${C_KEY}mirza update --version 0.1.6${CR}\n"
+    printf "    ${C_DIM}            --admin 111 --domain bot.example.com --version 2.0.0${CR}\n"
+    printf "    ${C_KEY}mirza update --version 2.0.0${CR}\n"
     printf "    ${C_KEY}mirza update --channel release${CR}\n"
     printf "    ${C_KEY}mirza remove${CR}\n"
     printf "    ${C_KEY}mirza bot-add --id shop1 --name ShopBot --token TOKEN \\\${CR}\n"
     printf "    ${C_DIM}              --admin 111 --domain shop1.example.com${CR}\n"
     printf "    ${C_KEY}mirza bot-backup --id shop1 --retention 14${CR}\n"
+    printf "    ${C_KEY}mirza bot-updater-refresh --id shop1${CR}\n"
     printf "    ${C_KEY}mirza bot-restore --id shop1 --backup /path/to/backup.tar.gz${CR}\n"
 
     echo ""
@@ -2580,8 +2790,11 @@ function install_bot() {
         }
 
         run_step "Installing extra modules (php-soap, php-ssh2, libssh2)" \
-            "DEBIAN_FRONTEND=noninteractive apt-get install -y php8.2-soap php8.2-ssh2 php8.2-sqlite3 nodejs npm sqlite3 libssh2-1-dev libssh2-1" \
+            "DEBIAN_FRONTEND=noninteractive apt-get install -y php8.2-soap php8.2-ssh2 php8.2-sqlite3 sqlite3 libssh2-1-dev libssh2-1" \
             || { show_step_error; install_pause "Installing extra PHP modules"; }
+
+        run_step "Installing Node.js 20 for Fragment" "ensure_node_runtime" \
+            || { show_step_error; install_pause "Installing Fragment Node.js runtime"; }
 
         run_step "Enabling & starting services (MySQL, Apache)" \
             "systemctl enable mysql.service && systemctl start mysql.service && systemctl enable apache2 && systemctl start apache2" \
@@ -2604,18 +2817,6 @@ function install_bot() {
         print_header "Downloading Bot Files"
         ZIP_URL="$(state_get SRC_ZIP_URL)"; [ -z "$ZIP_URL" ] && ZIP_URL="$SRC_ZIP_URL"
         SRC_LABEL_RESUME="$(state_get SRC_LABEL)"; [ -z "$SRC_LABEL_RESUME" ] && SRC_LABEL_RESUME="$SRC_LABEL"
-        if [ -d "$BOT_DIR" ]; then
-            sudo rm -rf "$BOT_DIR" || {
-                echo -e "\e[91mError: Failed to remove existing directory $BOT_DIR.\033[0m"
-                install_pause "Cleaning bot directory"
-            }
-        fi
-        sudo mkdir -p "$BOT_DIR"
-        if [ ! -d "$BOT_DIR" ]; then
-            echo -e "\e[91mError: Failed to create directory $BOT_DIR.\033[0m"
-            install_pause "Creating bot directory"
-        fi
-
         TEMP_DIR="/tmp/mirzaprobot"
         rm -rf "$TEMP_DIR"; mkdir -p "$TEMP_DIR"
         run_step "Downloading Mirza (${SRC_LABEL_RESUME})" "wget -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
@@ -2628,13 +2829,23 @@ function install_bot() {
             echo -e "\e[91mError: Extracted source folder not found (bad or empty download).\033[0m"
             install_pause "Locating extracted files"
         fi
-        mv "$EXTRACTED_DIR"/* "$BOT_DIR" || {
-            echo -e "\e[91mError: Failed to move extracted files.\033[0m"
-            install_pause "Moving bot files"
-        }
+        run_step "Validating downloaded Premium source" "validate_source_package '$EXTRACTED_DIR'" \
+            || { show_step_error; install_pause "Validating downloaded source"; }
+
+        if [ -d "$BOT_DIR" ]; then
+            sudo rm -rf "$BOT_DIR" || {
+                echo -e "\e[91mError: Failed to remove existing directory $BOT_DIR.\033[0m"
+                install_pause "Cleaning bot directory"
+            }
+        fi
+        sudo mkdir -p "$BOT_DIR"
+        run_step "Installing Premium source files" "rsync -a '$EXTRACTED_DIR/' '$BOT_DIR/'" \
+            || { show_step_error; install_pause "Installing bot files"; }
         rm -rf "$TEMP_DIR"
         sudo chown -R www-data:www-data "$BOT_DIR"
-        sudo chmod -R 755 "$BOT_DIR"
+        sudo find "$BOT_DIR" -type d -exec chmod 755 {} +
+        sudo find "$BOT_DIR" -type f -exec chmod 644 {} +
+        sudo find "$BOT_DIR" -type f -name '*.sh' -exec chmod 755 {} +
         wait
         mark_phase FILES
     else
@@ -2970,9 +3181,13 @@ EOF
     run_step "Installing bot auto-updater" "install_bot_auto_updater" \
         || { show_step_error; install_pause "Installing bot auto-updater"; }
 
-    run_step "Installing Fragment TON signer and order worker" \
-        "chmod +x '$BOT_DIR/services/fragment-signer/install-service.sh' && '$BOT_DIR/services/fragment-signer/install-service.sh' '$BOT_DIR' '$dbname'" \
-        || { show_step_error; install_pause "Installing Fragment TON signer"; }
+    if [ -f "$BOT_DIR/services/fragment-signer/install-service.sh" ]; then
+        run_step "Installing Fragment TON signer and order worker" \
+            "sync_fragment_runtime '$BOT_DIR' '$dbname'" \
+            || { show_step_error; install_pause "Installing Fragment TON signer"; }
+    else
+        echo -e "  ${C_WARN}●${CR} ${C_WARN}The selected source does not include Fragment automation.${CR}"
+    fi
 
     # ── Done ──
     mark_phase COMPLETE
@@ -3046,31 +3261,37 @@ function update_bot() {
         echo -e "\e[91mError: Extracted update folder not found. Aborting before touching the current install.\033[0m"
         rm -rf "$TEMP_DIR"; sleep 2; show_menu; return 1
     fi
+    if ! run_step "Validating downloaded Premium source" "validate_source_package '$EXTRACTED_DIR'"; then
+        show_step_error
+        rm -rf "$TEMP_DIR"
+        echo -e "\e[91mThe update package is incomplete or invalid. The current bot was not changed.\033[0m"
+        sleep 2; show_menu; return 1
+    fi
+
     CONFIG_PATH="$BOT_DIR/config.php"
-    TEMP_CONFIG="/root/mirzapro_config_backup.php"
-    if [ -f "$CONFIG_PATH" ]; then
-        cp "$CONFIG_PATH" "$TEMP_CONFIG" || {
-            echo -e "\e[91mConfig file backup failed!\033[0m"
-            exit 1
-        }
-    else
-        echo -e "\e[93mWarning: config.php not found. Proceeding without backup.\033[0m"
+    UPDATE_BACKUP_DIR="/var/backups/therealbot/cli"
+    UPDATE_STAMP="$(date +%Y%m%d_%H%M%S)"
+    UPDATE_BACKUP_FILE="$UPDATE_BACKUP_DIR/before_update_${UPDATE_STAMP}.tar.gz"
+    sudo mkdir -p "$UPDATE_BACKUP_DIR"
+    if ! run_step "Backing up the current bot" "tar -czf '$UPDATE_BACKUP_FILE' -C '$BOT_DIR' ."; then
+        show_step_error
+        rm -rf "$TEMP_DIR"
+        echo -e "\e[91mUpdate stopped because the safety backup could not be created.\033[0m"
+        sleep 2; show_menu; return 1
     fi
-    sudo rm -rf "$BOT_DIR" || {
-        echo -e "\e[91mFailed to remove old bot files!\033[0m"
-        exit 1
-    }
-    sudo mkdir -p "$BOT_DIR"
-    sudo mv "$EXTRACTED_DIR"/* "$BOT_DIR/" || {
-        echo -e "\e[91mFile transfer failed!\033[0m"
-        exit 1
-    }
-    if [ -f "$TEMP_CONFIG" ]; then
-        sudo mv "$TEMP_CONFIG" "$CONFIG_PATH" || {
-            echo -e "\e[91mConfig file restore failed!\033[0m"
-            exit 1
-        }
+
+    if ! run_step "Deploying Premium source" \
+        "rsync -a --delete --exclude='/config.php' --exclude='/error_log' '$EXTRACTED_DIR/' '$BOT_DIR/'"; then
+        show_step_error
+        echo -e "\e[93mDeployment failed; restoring the previous bot automatically...\033[0m"
+        sudo rm -rf "$BOT_DIR"
+        sudo mkdir -p "$BOT_DIR"
+        sudo tar -xzf "$UPDATE_BACKUP_FILE" -C "$BOT_DIR"
+        rm -rf "$TEMP_DIR"
+        echo -e "\e[91mUpdate failed and the previous version was restored.\033[0m"
+        sleep 2; show_menu; return 1
     fi
+
     if [ -f "$BOT_DIR/install.sh" ]; then
         sed -i 's/\r$//' "$BOT_DIR/install.sh"
         if bash -n "$BOT_DIR/install.sh" 2>/dev/null; then
@@ -3084,12 +3305,27 @@ function update_bot() {
         echo -e "\n\e[91mWarning: install.sh not found in update files.\033[0m"
     fi
     sudo chown -R www-data:www-data "$BOT_DIR"
-    sudo chmod -R 755 "$BOT_DIR"
+    sudo find "$BOT_DIR" -type d -exec chmod 755 {} +
+    sudo find "$BOT_DIR" -type f -exec chmod 644 {} +
+    sudo find "$BOT_DIR" -type f -name '*.sh' -exec chmod 755 {} +
 
     # Recreate/refresh the updater after every CLI update as well.
     if ! install_bot_auto_updater; then
         echo -e "\e[91mWarning: failed to install the Telegram auto-updater.\033[0m"
     fi
+
+    if [ -f "$BOT_DIR/services/fragment-signer/install-service.sh" ]; then
+        if ! run_step "Refreshing Fragment TON signer and order worker" \
+            "sync_fragment_runtime '$BOT_DIR'"; then
+            show_step_error
+            echo -e "\e[93mWarning: the bot was updated, but the Fragment runtime needs manual repair.\033[0m"
+        fi
+    else
+        echo -e "\e[93mWarning: this source does not include the Fragment installer.\033[0m"
+    fi
+
+    find "$UPDATE_BACKUP_DIR" -maxdepth 1 -type f -name 'before_update_*.tar.gz' \
+        -printf '%T@ %p\n' | sort -rn | tail -n +6 | cut -d' ' -f2- | xargs -r rm -f
 
     DOMAIN_NAME=""
     if [ -f "$CONFIG_PATH" ]; then
@@ -3376,11 +3612,9 @@ function migrate_to_pro() {
     DOMAIN_NAME=$(echo "$OLD_DOMAIN_FULL" | cut -d'/' -f1)
     echo -e "\033[32mDomain detected: $DOMAIN_NAME\033[0m"
     NEW_BOT_DIR="/var/www/html/mirzaprobotconfig"
-    rm -rf "$OLD_BOT_DIR"
-    mkdir -p "$NEW_BOT_DIR"
-    ZIP_URL="https://github.com/TheRealMr404/TheRealBot-Premium/archive/refs/heads/main.zip"
+    ZIP_URL="https://github.com/${GIT_REPO}/archive/refs/heads/${GIT_BRANCH}.zip"
     TEMP_DIR="/tmp/mirzabot_mig"
-    mkdir -p "$TEMP_DIR"
+    rm -rf "$TEMP_DIR"; mkdir -p "$TEMP_DIR"
     run_step "Downloading Mirza source" "wget -q -O '$TEMP_DIR/bot.zip' '$ZIP_URL'" \
         || { show_step_error; echo -e "\033[31mError: Failed to download Mirza source.\033[0m"; exit 1; }
     run_step "Extracting source files" "unzip -o -q '$TEMP_DIR/bot.zip' -d '$TEMP_DIR'" \
@@ -3390,7 +3624,16 @@ function migrate_to_pro() {
         echo -e "\033[31mError: Extracted source folder not found. Aborting migration.\033[0m"
         rm -rf "$TEMP_DIR"; exit 1
     fi
-    mv "$EXTRACTED_DIR"/* "$NEW_BOT_DIR"
+    if ! validate_source_package "$EXTRACTED_DIR"; then
+        echo -e "\033[31mError: Downloaded Premium source is incomplete. The old bot was not changed.\033[0m"
+        rm -rf "$TEMP_DIR"; exit 1
+    fi
+    rm -rf "$NEW_BOT_DIR"
+    mkdir -p "$NEW_BOT_DIR"
+    rsync -a "$EXTRACTED_DIR/" "$NEW_BOT_DIR/" || {
+        echo -e "\033[31mError: Failed to deploy Premium files. The old bot is still available.\033[0m"
+        rm -rf "$TEMP_DIR" "$NEW_BOT_DIR"; exit 1
+    }
     rm -rf "$TEMP_DIR"
     NEW_SECRET_TOKEN=$(openssl rand -base64 10 | tr -dc 'a-zA-Z0-9' | cut -c1-8)
     cat <<EOF > "$NEW_BOT_DIR/config.php"
@@ -3415,7 +3658,9 @@ try { \$pdo = new PDO(\$dsn, \$usernamedb, \$passworddb, \$options); } catch (\P
 ?>
 EOF
     chown -R www-data:www-data "$NEW_BOT_DIR"
-    chmod -R 755 "$NEW_BOT_DIR"
+    find "$NEW_BOT_DIR" -type d -exec chmod 755 {} +
+    find "$NEW_BOT_DIR" -type f -exec chmod 644 {} +
+    find "$NEW_BOT_DIR" -type f -name '*.sh' -exec chmod 755 {} +
     echo -e "\033[33mReconfiguring Apache...\033[0m"
     a2dissite 000-default.conf 2>/dev/null || true
     a2dissite 000-default-le-ssl.conf 2>/dev/null || true
@@ -3464,7 +3709,10 @@ EOF
          -F "secret_token=${NEW_SECRET_TOKEN}" \
          "https://api.telegram.org/bot${OLD_API_KEY}/setWebhook"
     sleep 2
-    curl -k "https://${DOMAIN_NAME}/table.php" > /dev/null 2>&1
+    php8.2 "$NEW_BOT_DIR/table.php" > /dev/null 2>&1
+    install_bot_auto_updater || echo -e "\033[33mWarning: admin-panel updater installation failed.\033[0m"
+    sync_fragment_runtime "$NEW_BOT_DIR" "$NEW_DB" \
+        || echo -e "\033[33mWarning: Fragment runtime installation failed; run its install-service.sh after checking the log.\033[0m"
     sed -i 's/\r$//' /root/install.sh
     chmod +x /root/install.sh
     rm -f /usr/local/bin/mirza
@@ -3506,6 +3754,7 @@ print_usage() {
     bot-add            Add an isolated Docker bot
     bot-list           List Docker bots
     bot-update         Backup and update a Docker bot
+    bot-updater-refresh Repair the update button inside a Docker bot
     bot-backup         Create a full Docker bot backup
     bot-restore        Restore a Docker bot backup
     bot-remove         Backup and remove a Docker bot
@@ -3521,8 +3770,8 @@ print_usage() {
     --domain <domain>  Domain name (e.g. bot.example.com)
     --db-user <user>   Database username
     --db-pass <pass>   Database password
-    --version <tag>    Install/update a specific release tag (e.g. 0.1.7)
-    --channel <name>   Source channel: beta | release | auto
+    --version <tag>    Install/update a specific release tag (e.g. 2.0.0)
+    --channel <name>   Source channel: main | auto | release | stable
     --id <name>        Docker instance id
     --backup <path>    Backup archive for add/restore
     --schedule <mode>  daily | weekly | off
@@ -3533,13 +3782,14 @@ print_usage() {
 
   Examples:
     mirza install --channel auto
-    mirza install --name myvpnbot --token 123:ABC --admin 111 --domain bot.example.com --version 0.1.7
+    mirza install --name myvpnbot --token 123:ABC --admin 111 --domain bot.example.com --version 2.0.0
     mirza update --channel release
-    mirza update --version 0.1.6
+    mirza update --version 2.0.0
     mirza updater-refresh
     mirza bot-add --id shop1 --name ShopBot --token TOKEN --admin 111 --domain shop.example.com
     mirza bot-add --id shop2 --name ShopBot2 --token TOKEN --admin 111 --domain shop2.example.com --source-dir /path/to/custom-source
     mirza bot-backup --id shop1 --retention 14
+    mirza bot-updater-refresh --id shop1
     mirza bot-restore --id shop1 --backup /opt/mirza/backups/shop1/file.tar.gz
 
 USAGE
@@ -3549,7 +3799,7 @@ process_arguments() {
     local cmd="menu"
     # First non-flag token is the command
     case "$1" in
-        install|update|remove|migrate|renew|updater-refresh|menu|bot-add|bot-list|bot-update|bot-backup|bot-restore|bot-remove|bot-restart|bot-logs|bot-backup-schedule) cmd="$1"; shift ;;
+        install|update|remove|migrate|renew|updater-refresh|menu|bot-add|bot-list|bot-update|bot-updater-refresh|bot-backup|bot-restore|bot-remove|bot-restart|bot-logs|bot-backup-schedule) cmd="$1"; shift ;;
         -h|--help) print_usage; exit 0 ;;
         "") cmd="menu" ;;
         --*) cmd="menu" ;;            # only flags given -> menu, but still parse flags
@@ -3597,6 +3847,7 @@ process_arguments() {
         bot-add) docker_bot_add ;;
         bot-list) docker_bot_list ;;
         bot-update) docker_bot_update "$ARG_ID" ;;
+        bot-updater-refresh) docker_bot_updater_refresh "$ARG_ID" ;;
         bot-backup) docker_bot_backup "$ARG_ID" ;;
         bot-restore) docker_bot_restore "$ARG_ID" "$ARG_BACKUP" ;;
         bot-remove) docker_bot_remove "$ARG_ID" ;;

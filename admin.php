@@ -9593,25 +9593,37 @@ elseif ($user['step'] == "cr_step_get_emoji" && in_array($from_id, $admin_ids)) 
     }
 
     $updateOutput = [];
-    $updateExitCode = 0;
-    $updateCommand = 'sudo -n /usr/local/sbin/therealbot-update '
-        . escapeshellarg($botRoot)
-        . ' 2>&1';
-    exec($updateCommand, $updateOutput, $updateExitCode);
-
-    $updateResult = trim(implode("\n", $updateOutput));
-    $safeUpdateResult = htmlspecialchars(mb_substr($updateResult, 0, 3000), ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
-
-    if ($updateExitCode === 0) {
-        $updateMessage = "✅ بروزرسانی ربات با موفقیت انجام شد.";
-        if ($safeUpdateResult !== '') {
-            $updateMessage .= "\n\n<pre>{$safeUpdateResult}</pre>";
-        }
+    $updateExitCode = 1;
+    $disabledFunctions = array_map('trim', explode(',', (string) ini_get('disable_functions')));
+    if (!function_exists('exec') || in_array('exec', $disabledFunctions, true)) {
+        $updateResult = 'PHP_EXEC_DISABLED';
     } else {
-        $updateMessage = "❌ بروزرسانی ربات ناموفق بود.";
-        if ($safeUpdateResult !== '') {
-            $updateMessage .= "\n\n<pre>{$safeUpdateResult}</pre>";
-        }
+        $updateCommand = 'sudo -n /usr/local/sbin/therealbot-update '
+            . escapeshellarg($botRoot)
+            . ' 2>&1';
+        exec($updateCommand, $updateOutput, $updateExitCode);
+        $updateResult = trim(implode("\n", $updateOutput));
+    }
+
+    $isDockerBot = trim((string) getenv('MIRZA_DOCKER_INSTANCE')) !== '';
+    if ($updateExitCode === 0 && str_contains($updateResult, 'UPDATE_SUCCESS')) {
+        $updateMessage = "✅ بروزرسانی ربات با موفقیت انجام شد.";
+    } elseif (str_contains($updateResult, 'UPDATE_ALREADY_RUNNING')) {
+        $updateMessage = "⏳ بروزرسانی دیگری در حال اجرا است. چند دقیقه دیگر دوباره بررسی کنید.";
+    } elseif ($isDockerBot && (
+        str_contains($updateResult, 'INVALID_UPDATE_SOURCE')
+        || str_contains($updateResult, 'LOCAL_SOURCE_UPDATE_REQUIRES_HOST_MANAGER')
+        || str_contains($updateResult, 'MIRZA_SOURCE_URL')
+        || str_contains($updateResult, 'not found')
+        || str_contains($updateResult, 'not permitted')
+    )) {
+        $updateMessage = "❌ بروزرسان داخلی این کانتینر آماده نیست. از پنل سرور گزینه «ترمیم دکمه آپدیت» را یک‌بار اجرا کنید.";
+    } else {
+        $updateMessage = "❌ بروزرسانی ربات ناموفق بود. جزئیات خطا در لاگ سرور ثبت شد.";
+    }
+
+    if ($updateExitCode !== 0) {
+        error_log('Bot updater failed (exit ' . $updateExitCode . '): ' . mb_substr($updateResult, 0, 2000));
     }
 
     sendmessage($from_id, $updateMessage, $keyboardadmin, 'HTML');
