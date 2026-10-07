@@ -652,12 +652,16 @@ function telegramFragmentAdminHome()
     $text .= "پلن‌ها: <code>{$plans}</code> | سفارش‌های باز: <code>{$queue}</code>\n";
     $text .= 'آخرین بررسی: ' . telegramFragmentEscape($last) . '</blockquote>';
     if (!$status['signer'] && $status['error'] !== '') {
+        $dockerInstance = preg_replace('/[^a-z0-9-]/', '', strtolower((string) getenv('MIRZA_DOCKER_INSTANCE')));
+        $repairCommand = $dockerInstance !== ''
+            ? 'sudo mirza bot-repair --id ' . $dockerInstance
+            : 'sudo bash ' . __DIR__ . '/services/fragment-signer/install-service.sh';
         $text .= "
 
 ⚠️ <b>علت قطعی سرویس امضا:</b>
 <code>" . telegramFragmentEscape(mb_substr($status['error'], 0, 300)) . "</code>
 
-راه‌حل (روی سرور، یک‌بار): <code>sudo bash " . telegramFragmentEscape(__DIR__) . "/services/fragment-signer/install-service.sh</code>";
+راه‌حل (روی سرور، یک‌بار): <code>" . telegramFragmentEscape($repairCommand) . "</code>";
     }
     $rows = [
         [['text' => 'فروش خودکار: ' . ($enabled ? 'روشن' : 'خاموش'), 'callback_data' => 'vsa_fg_toggle', 'style' => $enabled ? 'success' : 'danger']],

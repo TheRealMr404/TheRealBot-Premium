@@ -1382,6 +1382,109 @@ sync_signer_token() {
     chmod 700 "$dir/updater-backups" 2>/dev/null || true
 }
 
+ensure_fragment_stack() {
+    local dir="$1" slug="$2" compose_file="$dir/compose.yml"
+    local override_file="$dir/compose.fragment-migration.yml" merged_file backup_file
+    STACK_CHANGED=0
+    grep -qE '^  signer:[[:space:]]*$' "$compose_file" && return 0
+    [ -s "$dir/app/services/fragment-signer/server.js" ] || return 1
+    [ -s "$dir/app/services/fragment-signer/package.json" ] || return 1
+
+    cat > "$dir/Signer.Dockerfile" <<'EOF'
+FROM node:20-bookworm-slim
+WORKDIR /srv/signer
+COPY app/services/fragment-signer/package*.json ./
+RUN npm install --omit=dev --no-audit --no-fund
+COPY app/services/fragment-signer/server.js ./server.js
+CMD ["node", "server.js"]
+EOF
+
+    if ! grep -q 'libsqlite3-dev' "$dir/Dockerfile"; then
+        sed -i '/cron curl unzip rsync sudo ca-certificates git util-linux/ s/ util-linux/ util-linux sqlite3 libsqlite3-dev/' "$dir/Dockerfile"
+    fi
+    if ! grep -qE 'docker-php-ext-install .*pdo_sqlite' "$dir/Dockerfile"; then
+        sed -i 's/docker-php-ext-install -j"$(nproc)" /docker-php-ext-install -j"$(nproc)" pdo_sqlite /' "$dir/Dockerfile"
+    fi
+    grep -q 'libsqlite3-dev' "$dir/Dockerfile" || return 1
+    grep -qE 'docker-php-ext-install .*pdo_sqlite' "$dir/Dockerfile" || return 1
+
+    cat > "$override_file" <<EOF
+services:
+  app:
+    environment:
+      MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787
+      MIRZA_FRAGMENT_DATA_DIR: /var/lib/mirza-fragment/php-data
+      SIGNER_TOKEN: \${SIGNER_TOKEN}
+    volumes:
+      - ./fragment-php-data:/var/lib/mirza-fragment/php-data
+      - ./fragment-signer.env:/etc/mirza/fragment-signer-\${DB_NAME}.env:ro
+    depends_on:
+      signer:
+        condition: service_healthy
+  fragment-worker:
+    image: mirza-$slug-app:local
+    container_name: mirza-$slug-fragment-worker
+    restart: unless-stopped
+    command: ["sh", "-c", "while true; do /usr/bin/flock -n /tmp/mirza-fragment.lock php /var/www/html/cronbot/fragment_orders.php >/dev/null 2>&1 || true; sleep 30; done"]
+    environment:
+      MIRZA_DOCKER_INSTANCE: \${BOT_SLUG}
+      MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787
+      MIRZA_FRAGMENT_DATA_DIR: /var/lib/mirza-fragment/php-data
+      SIGNER_TOKEN: \${SIGNER_TOKEN}
+    volumes:
+      - ./app:/var/www/html
+      - ./fragment-php-data:/var/lib/mirza-fragment/php-data
+      - ./fragment-signer.env:/etc/mirza/fragment-signer-\${DB_NAME}.env:ro
+    depends_on:
+      db:
+        condition: service_healthy
+      signer:
+        condition: service_healthy
+    networks:
+      - internal
+      - edge
+  signer:
+    image: mirza-$slug-fragment-signer:local
+    build:
+      context: .
+      dockerfile: Signer.Dockerfile
+    container_name: mirza-$slug-fragment-signer
+    restart: unless-stopped
+    environment:
+      SIGNER_TOKEN: \${SIGNER_TOKEN}
+      HOST: 0.0.0.0
+      PORT: 8787
+      STATE_FILE: /data/state.json
+      CONFIG_FILE: /data/signer-config.json
+      TOKEN_FILE: /data/signer-token.txt
+    volumes:
+      - ./fragment-signer-data:/data
+    networks:
+      - internal
+      - edge
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
+      interval: 20s
+      timeout: 5s
+      retries: 10
+      start_period: 20s
+EOF
+
+    merged_file=$(mktemp "$dir/compose.merged.XXXXXX.yml") || return 1
+    if ! compose --env-file "$dir/.env" -f "$compose_file" -f "$override_file" config --no-interpolate > "$merged_file"; then
+        rm -f "$merged_file" "$override_file"
+        return 1
+    fi
+    grep -qE '^  signer:[[:space:]]*$' "$merged_file" || { rm -f "$merged_file" "$override_file"; return 1; }
+    grep -qE '^  fragment-worker:[[:space:]]*$' "$merged_file" || { rm -f "$merged_file" "$override_file"; return 1; }
+    backup_file="$dir/compose.pre-fragment.$(date +%Y%m%d_%H%M%S).yml"
+    cp -a "$compose_file" "$backup_file" || { rm -f "$merged_file" "$override_file"; return 1; }
+    chmod 0600 "$merged_file"
+    mv -f "$merged_file" "$compose_file"
+    rm -f "$override_file"
+    STACK_CHANGED=1
+}
+
 refresh_webhook() {
     local dir="$1" token domain response
     token=$(env_value BOT_TOKEN "$dir/.env" 2>/dev/null || true)
@@ -1394,7 +1497,7 @@ refresh_webhook() {
 }
 
 repair_instance() {
-    local dir="$1" slug request status_file need_repair=0 requested=0 state name
+    local dir="$1" slug request status_file need_repair=0 requested=0 state name worker_service=""
     slug=$(basename "$dir")
     valid_slug "$slug" || return 0
     [ -f "$dir/.env" ] && [ -f "$dir/compose.yml" ] || return 0
@@ -1403,13 +1506,24 @@ repair_instance() {
     [ -f "$request" ] && requested=1
 
     sync_signer_token "$dir" || return 1
+    if ! ensure_fragment_stack "$dir" "$slug"; then
+        printf 'failed fragment-stack-migration %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
     [ "$TOKEN_CHANGED" -eq 1 ] && need_repair=1
+    [ "$STACK_CHANGED" -eq 1 ] && need_repair=1
     [ "$requested" -eq 1 ] && need_repair=1
     [ "$FORCE" -eq 1 ] && need_repair=1
+    if compose --env-file "$dir/.env" -f "$dir/compose.yml" config --services | grep -qx 'fragment-worker'; then
+        worker_service=fragment-worker
+    fi
     for name in db fragment-signer app; do
         state=$(container_state "mirza-$slug-$name")
         case "$state" in healthy|running) ;; *) need_repair=1 ;; esac
     done
+    if [ -n "$worker_service" ] && [ "$(container_state "mirza-$slug-fragment-worker")" != running ]; then
+        need_repair=1
+    fi
     [ "$need_repair" -eq 1 ] || return 0
 
     printf 'running %s\n' "$(date -Is)" > "$status_file"
@@ -1428,12 +1542,12 @@ repair_instance() {
         return 1
     fi
 
-    if [ "$requested" -eq 1 ] || [ "$FORCE" -eq 1 ]; then
-        if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --build --force-recreate signer app >/dev/null 2>&1; then
+    if [ "$requested" -eq 1 ] || [ "$FORCE" -eq 1 ] || [ "$STACK_CHANGED" -eq 1 ]; then
+        if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --build --force-recreate signer app ${worker_service:+$worker_service} >/dev/null 2>&1; then
             printf 'failed application-rebuild %s\n' "$(date -Is)" > "$status_file"
             return 1
         fi
-    elif ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --force-recreate signer app >/dev/null 2>&1; then
+    elif ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --force-recreate signer app ${worker_service:+$worker_service} >/dev/null 2>&1; then
         printf 'failed application-start %s\n' "$(date -Is)" > "$status_file"
         return 1
     fi
@@ -1451,10 +1565,15 @@ repair_instance() {
         printf 'failed signer-token-auth %s\n' "$(date -Is)" > "$status_file"
         return 1
     fi
-    if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" exec -T app sh -c \
+    if [ -n "$worker_service" ]; then
+        [ "$(container_state "mirza-$slug-fragment-worker")" = running ] || {
+            printf 'failed order-worker-health %s\n' "$(date -Is)" > "$status_file"
+            return 1
+        }
+    elif ! compose --env-file "$dir/.env" -f "$dir/compose.yml" exec -T app sh -c \
         'test -f /var/www/html/cronbot/fragment_orders.php && for p in /proc/[0-9]*/comm; do [ "$(cat "$p" 2>/dev/null)" = cron ] && exit 0; done; exit 1'; then
-        printf 'failed order-worker-health %s\n' "$(date -Is)" > "$status_file"
-        return 1
+            printf 'failed order-worker-health %s\n' "$(date -Is)" > "$status_file"
+            return 1
     fi
     if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" exec -T app php /var/www/html/table.php >/dev/null 2>&1; then
         printf 'failed database-migration %s\n' "$(date -Is)" > "$status_file"
