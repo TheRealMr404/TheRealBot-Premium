@@ -1347,7 +1347,10 @@ sync_signer_token() {
     TOKEN_CHANGED=0
     token=$(env_value SIGNER_TOKEN "$env_file" 2>/dev/null || true)
     signer_token=$(env_value SIGNER_TOKEN "$signer_env" 2>/dev/null || true)
-    token_file_token=$(tr -d '\r\n' < "$dir/fragment-signer-data/signer-token.txt" 2>/dev/null || true)
+    token_file_token=""
+    if [ -f "$dir/fragment-signer-data/signer-token.txt" ]; then
+        token_file_token=$(tr -d '\r\n' < "$dir/fragment-signer-data/signer-token.txt" || true)
+    fi
 
     if ! valid_signer_token "$token"; then
         if valid_signer_token "$signer_token"; then
@@ -2578,7 +2581,12 @@ docker_bot_repair() {
     docker_install_healer || return 1
     mkdir -p "$dir/updater-backups"
     printf 'requested_at=%s\nrebuild=1\n' "$(date -Is)" > "$dir/updater-backups/.repair-request"
-    /usr/local/sbin/mirza-docker-healer --id "$slug" --force
+    if /usr/local/sbin/mirza-docker-healer --id "$slug" --force; then
+        echo "All required services for '$slug' are healthy."
+    else
+        echo "Service repair failed for '$slug'. Check $dir/updater-backups/.repair-status"
+        return 1
+    fi
 }
 
 docker_bot_schedule_backup() {
