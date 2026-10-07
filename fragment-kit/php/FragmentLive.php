@@ -208,13 +208,28 @@ final class FragmentLive
 
     /* ---------- مدیریت ولت و سرویس امضا از پنل (کلید ولت فقط به سرویس امضا فرستاده می‌شود، در دیتابیس فروشگاه ذخیره نمی‌شود) ---------- */
 
-    /** آیا ارسال اطلاعات محرمانه به سرویس امضا امن است؟ (https، یا http فقط روی همین سرور) */
+    /** آیا ارسال اطلاعات محرمانه به سرویس امضا امن است؟ */
     public static function signerTransportSecure(): bool
     {
         $u = parse_url((string) self::cfg()['signerUrl']);
         if (!$u || empty($u['host'])) return false;
         if (($u['scheme'] ?? '') === 'https') return true;
-        return ($u['scheme'] ?? '') === 'http' && in_array(strtolower($u['host']), ['127.0.0.1', 'localhost', '[::1]', '::1'], true);
+        if (($u['scheme'] ?? '') !== 'http') return false;
+
+        $host = strtolower((string) $u['host']);
+        if (in_array($host, ['127.0.0.1', 'localhost', '[::1]', '::1'], true)) return true;
+
+        // The signer service is private inside the per-bot Docker network. It
+        // is safe to use plain HTTP there because the endpoint is never
+        // published on the host. Keep this exception deliberately narrow.
+        $dockerInstance = strtolower(trim((string) getenv('MIRZA_DOCKER_INSTANCE')));
+        $path = (string) ($u['path'] ?? '');
+        $pathOk = $path === '' || $path === '/';
+        return preg_match('/^[a-z][a-z0-9-]{1,30}$/', $dockerInstance) === 1
+            && $host === 'signer'
+            && (int) ($u['port'] ?? 0) === 8787
+            && $pathOk
+            && !isset($u['user'], $u['pass'], $u['query'], $u['fragment']);
     }
 
     /** @throws FragmentError */
@@ -233,7 +248,7 @@ final class FragmentLive
         foreach (['maxTonPerTx', 'maxTonPerDay'] as $k) if (isset($b[$k]) && $b[$k] !== '') $out[$k] = $b[$k];
         if (!$out) throw new FragmentError('bad_request', 'چیزی برای ذخیره ارسال نشده است.');
         if ((isset($out['mnemonic']) || isset($out['apiKey'])) && !self::signerTransportSecure()) {
-            throw new FragmentError('insecure_signer', 'برای ارسال کلید ولت یا کلید API، آدرس سرویس امضا باید https باشد (یا http://127.0.0.1 روی همین سرور).');
+            throw new FragmentError('insecure_signer', 'برای ارسال کلید ولت یا کلید API، آدرس سرویس امضا باید https، loopback محلی یا شبکه داخلی امن Docker باشد.');
         }
         self::$info = null;
         return self::signer('POST', '/config', $out, 60);
