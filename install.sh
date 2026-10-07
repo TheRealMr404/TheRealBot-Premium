@@ -1256,6 +1256,265 @@ docker_env_value() {
     sed -n "s/^${key}=//p" "$file" | tail -1
 }
 
+docker_install_healer() {
+    cat > /usr/local/sbin/mirza-docker-healer <<'HEALER'
+#!/bin/bash
+set -Eeuo pipefail
+
+ROOT="${MIRZA_DOCKER_ROOT:-/opt/mirza}"
+INSTANCES="$ROOT/instances"
+GATEWAY="$ROOT/gateway"
+LOCK_FILE=/run/lock/mirza-docker-healer.lock
+TARGET=""
+FORCE=0
+
+while [ "$#" -gt 0 ]; do
+    case "$1" in
+        --all) TARGET=""; shift ;;
+        --id) TARGET="${2:-}"; shift 2 ;;
+        --force) FORCE=1; shift ;;
+        *) exit 2 ;;
+    esac
+done
+
+valid_slug() { [[ "$1" =~ ^[a-z][a-z0-9-]{1,30}$ ]]; }
+
+compose() {
+    if docker compose version >/dev/null 2>&1; then
+        docker compose "$@"
+    elif command -v docker-compose >/dev/null 2>&1; then
+        docker-compose "$@"
+    else
+        return 127
+    fi
+}
+
+env_value() {
+    local key="$1" file="$2"
+    [ -f "$file" ] || return 1
+    sed -n "s/^${key}=//p" "$file" | tail -1
+}
+
+set_env_value() {
+    local key="$1" value="$2" file="$3" tmp
+    tmp=$(mktemp "${file}.XXXXXX") || return 1
+    awk -v key="$key" -v value="$value" '
+        BEGIN { found=0 }
+        index($0, key "=") == 1 { if (!found) print key "=" value; found=1; next }
+        { print }
+        END { if (!found) print key "=" value }
+    ' "$file" > "$tmp"
+    chmod --reference="$file" "$tmp" 2>/dev/null || chmod 600 "$tmp"
+    chown --reference="$file" "$tmp" 2>/dev/null || true
+    mv -f "$tmp" "$file"
+}
+
+valid_signer_token() {
+    [ "${#1}" -ge 16 ] && [ "${#1}" -le 256 ] && [[ "$1" != *[[:space:]]* ]]
+}
+
+container_state() {
+    docker inspect -f '{{if .State.Health}}{{.State.Health.Status}}{{else}}{{.State.Status}}{{end}}' "$1" 2>/dev/null || true
+}
+
+wait_healthy() {
+    local container="$1" retries="${2:-60}" state i
+    for ((i=0; i<retries; i++)); do
+        state=$(container_state "$container")
+        case "$state" in
+            healthy|running) return 0 ;;
+            unhealthy|exited|dead) return 1 ;;
+        esac
+        sleep 2
+    done
+    return 1
+}
+
+repair_gateway() {
+    local mode
+    mode=$(cat "$GATEWAY/mode" 2>/dev/null || printf direct)
+    if [ "$mode" = apache ]; then
+        systemctl is-active --quiet apache2 || systemctl start apache2 >/dev/null 2>&1 || true
+    elif [ -f "$GATEWAY/compose.yml" ]; then
+        [ "$(docker inspect -f '{{.State.Running}}' mirza-gateway 2>/dev/null || true)" = true ] \
+            || compose -f "$GATEWAY/compose.yml" up -d >/dev/null 2>&1 || true
+    fi
+}
+
+sync_signer_token() {
+    local dir="$1" env_file="$dir/.env" signer_env="$dir/fragment-signer.env"
+    local token signer_token token_file_token db_name expected tmp
+    TOKEN_CHANGED=0
+    token=$(env_value SIGNER_TOKEN "$env_file" 2>/dev/null || true)
+    signer_token=$(env_value SIGNER_TOKEN "$signer_env" 2>/dev/null || true)
+    token_file_token=$(tr -d '\r\n' < "$dir/fragment-signer-data/signer-token.txt" 2>/dev/null || true)
+
+    if ! valid_signer_token "$token"; then
+        if valid_signer_token "$signer_token"; then
+            token="$signer_token"
+        elif valid_signer_token "$token_file_token"; then
+            token="$token_file_token"
+        else
+            token=$(openssl rand -hex 32)
+        fi
+        set_env_value SIGNER_TOKEN "$token" "$env_file"
+        TOKEN_CHANGED=1
+    fi
+
+    db_name=$(env_value DB_NAME "$env_file" 2>/dev/null || true)
+    [[ "$db_name" =~ ^[A-Za-z0-9_.-]+$ ]] || db_name=VpnBot
+    expected=$(printf 'SIGNER_TOKEN=%s\nMIRZA_FRAGMENT_SIGNER_URL=http://signer:8787\nMIRZA_FRAGMENT_DATA_DIR=/var/lib/mirza-fragment/php-data\n' "$token")
+    if [ ! -f "$signer_env" ] || [ "$(cat "$signer_env" 2>/dev/null)" != "${expected%$'\n'}" ]; then
+        tmp=$(mktemp "${signer_env}.XXXXXX") || return 1
+        printf '%s' "$expected" > "$tmp"
+        chown root:33 "$tmp" 2>/dev/null || true
+        chmod 0640 "$tmp"
+        mv -f "$tmp" "$signer_env"
+        TOKEN_CHANGED=1
+    fi
+
+    mkdir -p "$dir/fragment-signer-data" "$dir/fragment-php-data/$db_name" "$dir/updater-backups"
+    chown -R 1000:1000 "$dir/fragment-signer-data" 2>/dev/null || true
+    chown -R 33:33 "$dir/fragment-php-data" 2>/dev/null || true
+    chmod 700 "$dir/updater-backups" 2>/dev/null || true
+}
+
+refresh_webhook() {
+    local dir="$1" token domain response
+    token=$(env_value BOT_TOKEN "$dir/.env" 2>/dev/null || true)
+    domain=$(env_value DOMAIN "$dir/.env" 2>/dev/null || true)
+    [[ "$token" =~ ^[0-9]{6,15}:[A-Za-z0-9_-]{20,}$ ]] || return 0
+    [[ "$domain" =~ ^[A-Za-z0-9.-]+$ ]] || return 0
+    response=$(curl -fsS --connect-timeout 10 --max-time 20 \
+        -F "url=https://$domain/index.php" "https://api.telegram.org/bot$token/setWebhook" 2>/dev/null || true)
+    grep -q '"ok":true' <<< "$response"
+}
+
+repair_instance() {
+    local dir="$1" slug request status_file need_repair=0 requested=0 state name
+    slug=$(basename "$dir")
+    valid_slug "$slug" || return 0
+    [ -f "$dir/.env" ] && [ -f "$dir/compose.yml" ] || return 0
+    request="$dir/updater-backups/.repair-request"
+    status_file="$dir/updater-backups/.repair-status"
+    [ -f "$request" ] && requested=1
+
+    sync_signer_token "$dir" || return 1
+    [ "$TOKEN_CHANGED" -eq 1 ] && need_repair=1
+    [ "$requested" -eq 1 ] && need_repair=1
+    [ "$FORCE" -eq 1 ] && need_repair=1
+    for name in db fragment-signer app; do
+        state=$(container_state "mirza-$slug-$name")
+        case "$state" in healthy|running) ;; *) need_repair=1 ;; esac
+    done
+    [ "$need_repair" -eq 1 ] || return 0
+
+    printf 'running %s\n' "$(date -Is)" > "$status_file"
+    state=$(container_state "mirza-$slug-db")
+    case "$state" in
+        unhealthy|exited|dead)
+            docker restart "mirza-$slug-db" >/dev/null 2>&1 || true
+            ;;
+    esac
+    if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d db >/dev/null 2>&1; then
+        printf 'failed database-start %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+    if ! wait_healthy "mirza-$slug-db" 60; then
+        printf 'failed database-health %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+
+    if [ "$requested" -eq 1 ] || [ "$FORCE" -eq 1 ]; then
+        if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --build --force-recreate signer app >/dev/null 2>&1; then
+            printf 'failed application-rebuild %s\n' "$(date -Is)" > "$status_file"
+            return 1
+        fi
+    elif ! compose --env-file "$dir/.env" -f "$dir/compose.yml" up -d --force-recreate signer app >/dev/null 2>&1; then
+        printf 'failed application-start %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+
+    if ! wait_healthy "mirza-$slug-fragment-signer" 60; then
+        printf 'failed signer-health %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+    if ! wait_healthy "mirza-$slug-app" 90; then
+        printf 'failed application-health %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+    if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" exec -T app sh -c \
+        'test -n "$SIGNER_TOKEN" && curl -fsS -H "Authorization: Bearer $SIGNER_TOKEN" http://signer:8787/config >/dev/null'; then
+        printf 'failed signer-token-auth %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+    if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" exec -T app sh -c \
+        'test -f /var/www/html/cronbot/fragment_orders.php && for p in /proc/[0-9]*/comm; do [ "$(cat "$p" 2>/dev/null)" = cron ] && exit 0; done; exit 1'; then
+        printf 'failed order-worker-health %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+    if ! compose --env-file "$dir/.env" -f "$dir/compose.yml" exec -T app php /var/www/html/table.php >/dev/null 2>&1; then
+        printf 'failed database-migration %s\n' "$(date -Is)" > "$status_file"
+        return 1
+    fi
+
+    refresh_webhook "$dir" || true
+    rm -f "$request"
+    printf 'ok %s\n' "$(date -Is)" > "$status_file"
+}
+
+mkdir -p /run/lock "$INSTANCES"
+exec 9>"$LOCK_FILE"
+flock -n 9 || exit 0
+command -v docker >/dev/null 2>&1 || exit 1
+systemctl is-active --quiet docker || systemctl start docker >/dev/null 2>&1 || exit 1
+repair_gateway
+
+rc=0
+if [ -n "$TARGET" ]; then
+    valid_slug "$TARGET" || exit 2
+    repair_instance "$INSTANCES/$TARGET" || rc=1
+else
+    for dir in "$INSTANCES"/*; do
+        [ -d "$dir" ] || continue
+        repair_instance "$dir" || rc=1
+    done
+fi
+exit "$rc"
+HEALER
+    chmod 0750 /usr/local/sbin/mirza-docker-healer || return 1
+
+    cat > /etc/systemd/system/mirza-docker-healer.service <<'EOF'
+[Unit]
+Description=Mirza Docker bot service and signer repair
+After=docker.service network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/sbin/mirza-docker-healer --all
+Nice=10
+IOSchedulingClass=best-effort
+IOSchedulingPriority=7
+EOF
+
+    cat > /etc/systemd/system/mirza-docker-healer.timer <<'EOF'
+[Unit]
+Description=Check Mirza Docker bots every minute
+
+[Timer]
+OnBootSec=45s
+OnUnitActiveSec=60s
+AccuracySec=10s
+Persistent=true
+
+[Install]
+WantedBy=timers.target
+EOF
+    systemctl daemon-reload >/dev/null 2>&1 || return 1
+    systemctl enable --now mirza-docker-healer.timer >/dev/null 2>&1 || return 1
+}
+
 docker_port_in_use() {
     local port="$1"
     ss -ltnH 2>/dev/null | awk '{print $4}' | grep -Eq "(^|:)${port}$"
@@ -1415,6 +1674,7 @@ docker_install_engine() {
             || DEBIAN_FRONTEND=noninteractive apt-get install -y docker-compose >/dev/null 2>&1 \
             || return 1
     fi
+    docker_install_healer || return 1
 
     gateway_mode=$(docker_gateway_mode) || return 1
     printf '%s\n' "$gateway_mode" > "$DOCKER_GATEWAY/mode"
@@ -1696,6 +1956,11 @@ php -l "$BOT_DIR/index.php" >/dev/null
 php "$BOT_DIR/table.php" >/dev/null
 DEPLOY_STARTED=0
 
+# Ask the host to rebuild and verify this bot without exposing Docker to PHP.
+REPAIR_REQUEST_TMP="$BACKUP_DIR/.repair-request.$$"
+printf 'requested_at=%s\nrebuild=1\n' "$(date -Is)" > "$REPAIR_REQUEST_TMP"
+mv -f "$REPAIR_REQUEST_TMP" "$BACKUP_DIR/.repair-request"
+
 find "$BACKUP_DIR" -maxdepth 1 -type f -name 'source_*.tar.gz' -printf '%T@ %p\n' \
     | sort -rn | tail -n +6 | cut -d' ' -f2- | xargs -r rm -f
 echo UPDATE_SUCCESS
@@ -1852,7 +2117,7 @@ services:
       - ./app:/var/www/html
       - ./updater-backups:/var/backups/therealbot
       - ./fragment-php-data:/var/lib/mirza-fragment/php-data
-      - ./fragment-signer.env:/etc/mirza/fragment-signer-VpnBot.env:ro
+      - ./fragment-signer.env:/etc/mirza/fragment-signer-\${DB_NAME}.env:ro
     ports:
       - "127.0.0.1:\${APP_PORT}:80"
     depends_on:
@@ -2224,6 +2489,7 @@ docker_bot_update() {
     valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
     dir=$(docker_instance_dir "$slug") || return 1
     [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    docker_install_healer || { echo "Failed to install the Docker service healer."; return 1; }
     update_url=$(docker_source_url) || return 1
     docker_write_container_updater "$dir" "$update_url" \
         || { echo "Failed to refresh the in-container updater."; return 1; }
@@ -2281,6 +2547,7 @@ docker_bot_updater_refresh() {
     docker inspect "$container" >/dev/null 2>&1 \
         || { echo "Application container '$container' was not found."; return 1; }
 
+    docker_install_healer || { echo "Failed to install the Docker service healer."; return 1; }
     update_url=$(docker_source_url) || return 1
     docker_write_container_updater "$dir" "$update_url" || return 1
     docker cp "$dir/container-update.sh" "$container:/usr/local/sbin/therealbot-update" >/dev/null \
@@ -2296,7 +2563,22 @@ docker_bot_updater_refresh() {
         }
     echo "$check_output" | grep -q '^UPDATE_READY$' \
         || { echo "Unexpected updater self-check response."; return 1; }
+    mkdir -p "$dir/updater-backups"
+    printf 'requested_at=%s\nrebuild=1\n' "$(date -Is)" > "$dir/updater-backups/.repair-request"
+    /usr/local/sbin/mirza-docker-healer --id "$slug" --force \
+        || { echo "Updater was refreshed, but the service repair check failed."; return 1; }
     echo "In-bot updater refreshed successfully for '$slug'."
+}
+
+docker_bot_repair() {
+    local slug="${1:-${ARG_ID:-}}" dir
+    valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
+    dir=$(docker_instance_dir "$slug") || return 1
+    [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    docker_install_healer || return 1
+    mkdir -p "$dir/updater-backups"
+    printf 'requested_at=%s\nrebuild=1\n' "$(date -Is)" > "$dir/updater-backups/.repair-request"
+    /usr/local/sbin/mirza-docker-healer --id "$slug" --force
 }
 
 docker_bot_schedule_backup() {
@@ -2442,6 +2724,7 @@ function show_help_screen() {
     _kv "bot-list" "${C_DIM}List Docker bot instances${CR}"
     _kv "bot-update" "${C_DIM}Backup and update one Docker bot${CR}"
     _kv "bot-updater-refresh" "${C_DIM}Repair the update button inside a Docker bot${CR}"
+    _kv "bot-repair" "${C_DIM}Repair services, signer token and database connectivity${CR}"
     _kv "bot-backup" "${C_DIM}Create app + database backup${CR}"
     _kv "bot-restore" "${C_DIM}Restore a backup into one bot${CR}"
     _kv "bot-remove" "${C_DIM}Backup and remove one Docker bot${CR}"
@@ -3755,6 +4038,7 @@ print_usage() {
     bot-list           List Docker bots
     bot-update         Backup and update a Docker bot
     bot-updater-refresh Repair the update button inside a Docker bot
+    bot-repair         Repair all required services for one Docker bot
     bot-backup         Create a full Docker bot backup
     bot-restore        Restore a Docker bot backup
     bot-remove         Backup and remove a Docker bot
@@ -3790,6 +4074,7 @@ print_usage() {
     mirza bot-add --id shop2 --name ShopBot2 --token TOKEN --admin 111 --domain shop2.example.com --source-dir /path/to/custom-source
     mirza bot-backup --id shop1 --retention 14
     mirza bot-updater-refresh --id shop1
+    mirza bot-repair --id shop1
     mirza bot-restore --id shop1 --backup /opt/mirza/backups/shop1/file.tar.gz
 
 USAGE
@@ -3799,7 +4084,7 @@ process_arguments() {
     local cmd="menu"
     # First non-flag token is the command
     case "$1" in
-        install|update|remove|migrate|renew|updater-refresh|menu|bot-add|bot-list|bot-update|bot-updater-refresh|bot-backup|bot-restore|bot-remove|bot-restart|bot-logs|bot-backup-schedule) cmd="$1"; shift ;;
+        install|update|remove|migrate|renew|updater-refresh|menu|bot-add|bot-list|bot-update|bot-updater-refresh|bot-repair|bot-backup|bot-restore|bot-remove|bot-restart|bot-logs|bot-backup-schedule) cmd="$1"; shift ;;
         -h|--help) print_usage; exit 0 ;;
         "") cmd="menu" ;;
         --*) cmd="menu" ;;            # only flags given -> menu, but still parse flags
@@ -3848,6 +4133,7 @@ process_arguments() {
         bot-list) docker_bot_list ;;
         bot-update) docker_bot_update "$ARG_ID" ;;
         bot-updater-refresh) docker_bot_updater_refresh "$ARG_ID" ;;
+        bot-repair) docker_bot_repair "$ARG_ID" ;;
         bot-backup) docker_bot_backup "$ARG_ID" ;;
         bot-restore) docker_bot_restore "$ARG_ID" "$ARG_BACKUP" ;;
         bot-remove) docker_bot_remove "$ARG_ID" ;;

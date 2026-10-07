@@ -9607,7 +9607,9 @@ elseif ($user['step'] == "cr_step_get_emoji" && in_array($from_id, $admin_ids)) 
 
     $isDockerBot = trim((string) getenv('MIRZA_DOCKER_INSTANCE')) !== '';
     if ($updateExitCode === 0 && str_contains($updateResult, 'UPDATE_SUCCESS')) {
-        $updateMessage = "✅ بروزرسانی ربات با موفقیت انجام شد.";
+        $updateMessage = $isDockerBot
+            ? "✅ فایل‌های ربات بروزرسانی شد. بررسی دیتابیس، سرویس امضا و سایر سرویس‌های لازم به‌صورت خودکار آغاز شد."
+            : "✅ بروزرسانی ربات با موفقیت انجام شد.";
     } elseif (str_contains($updateResult, 'UPDATE_ALREADY_RUNNING')) {
         $updateMessage = "⏳ بروزرسانی دیگری در حال اجرا است. چند دقیقه دیگر دوباره بررسی کنید.";
     } elseif ($isDockerBot && (
