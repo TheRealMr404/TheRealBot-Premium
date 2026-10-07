@@ -518,7 +518,7 @@ systemctl reload apache2
 if [ -x "$BOT_DIR/services/fragment-signer/install-service.sh" ]; then
     DB_NAME="$(php -r 'require $argv[1]; echo preg_replace("/[^A-Za-z0-9_.-]/", "", (string) $dbname);' "$BOT_DIR/config.php" 2>/dev/null || true)"
     [ -n "$DB_NAME" ] || DB_NAME=VpnBot
-    "$BOT_DIR/services/fragment-signer/install-service.sh" "$BOT_DIR" "$DB_NAME" >/dev/null
+    "$BOT_DIR/services/fragment-signer/install-service.sh" "$BOT_DIR" "$DB_NAME" >/dev/null 2>&1 || echo "FRAGMENT_SIGNER_WARNING"
 fi
 
 DEPLOY_STARTED=0

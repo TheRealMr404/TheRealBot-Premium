@@ -125,6 +125,22 @@ final class Fragment
     {
         return FragmentLive::call($method, $params);
     }
+
+    /** مدیریت ولت و تنظیمات سرویس امضا (پنل ادمین ربات از این‌ها استفاده می‌کند) */
+    public static function signerConfig(): array
+    {
+        return FragmentLive::signerConfig();
+    }
+
+    public static function signerConfigSave(array $b): array
+    {
+        return FragmentLive::signerConfigSave($b);
+    }
+
+    public static function signerWalletRemove(): array
+    {
+        return FragmentLive::signerWalletRemove();
+    }
 }
 
 require_once __DIR__ . '/HttpClient.php';
