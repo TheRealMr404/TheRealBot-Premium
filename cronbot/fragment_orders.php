@@ -14,6 +14,11 @@ try {
     $setting = select('setting', '*');
     telegramProductsEnsureSchema();
     telegramFragmentEnsureSchema();
+    try {
+        telegramFragmentRefreshRateIfDue();
+    } catch (Throwable $e) {
+        telegramFragmentLogFailure('scheduled Nobitex rate', $e);
+    }
     telegramFragmentProcessPendingOrders(5);
 } catch (Throwable $e) {
     error_log('Fragment cron worker failed: ' . $e->getMessage());

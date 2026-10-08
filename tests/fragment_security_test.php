@@ -3,6 +3,7 @@ declare(strict_types=1);
 
 require_once dirname(__DIR__) . '/telegram_products.php';
 require_once dirname(__DIR__) . '/telegram_fragment.php';
+require_once dirname(__DIR__) . '/telegram_products_admin.php';
 require_once dirname(__DIR__) . '/fragment-kit/php/FragmentKit.php';
 
 function expectTrue(bool $condition, string $message): void
@@ -13,11 +14,17 @@ function expectTrue(bool $condition, string $message): void
 }
 
 $update = ['message' => ['from' => ['id' => 1, 'is_premium' => false]]];
+expectTrue(telegramFragmentUserIcon('5280962371207077415', '🛍') === '', 'Non-premium user must not receive a custom emoji tag.');
+$adminKeyboard = json_decode(virtualServicesAdminKeyboard([[['text' => 'مدیریت', 'callback_data' => 'vsa_home', 'style' => 'primary', 'icon_custom_emoji_id' => '5280962371207077415']]]), true);
+expectTrue(!isset($adminKeyboard['inline_keyboard'][0][0]['style'], $adminKeyboard['inline_keyboard'][0][0]['icon_custom_emoji_id']), 'Admin keyboard styling was not removed.');
+$styledAdminButton = $adminKeyboard['inline_keyboard'][0][0];
+expectTrue(!isset($styledAdminButton['style']) && !isset($styledAdminButton['icon_custom_emoji_id']) && $styledAdminButton['callback_data'] === 'vsa_home', 'Admin button should remain functional and plain.');
 $custom = '<tg-emoji emoji-id="5280962371207077415">X</tg-emoji> عنوان';
 expectTrue(telegramProductsSafeCustomText($custom) === ' عنوان', 'Custom emoji must be hidden for non-premium users.');
 expectTrue(!isset(telegramProductsStyledButton('عنوان', 'test', 'primary', '5280962371207077415')['icon_custom_emoji_id']), 'Button custom emoji leaked to non-premium user.');
 
 $update['message']['from']['is_premium'] = true;
+expectTrue(str_contains(telegramFragmentUserIcon('5280962371207077415', '🛍'), 'tg-emoji'), 'Premium user purchase icon is missing.');
 expectTrue(str_contains(telegramProductsSafeCustomText($custom), 'tg-emoji'), 'Premium custom emoji was removed for premium user.');
 expectTrue(isset(telegramProductsStyledButton('عنوان', 'test', 'primary', '5280962371207077415')['icon_custom_emoji_id']), 'Premium button custom emoji is missing.');
 
@@ -77,10 +84,13 @@ $installer = file_get_contents(dirname(__DIR__) . '/install.sh');
 $signerSource = file_get_contents(dirname(__DIR__) . '/services/fragment-signer/server.js');
 $adminSource = file_get_contents(dirname(__DIR__) . '/admin.php');
 $fragmentSource = file_get_contents(dirname(__DIR__) . '/telegram_fragment.php');
+$rateWorkerSource = file_get_contents(dirname(__DIR__) . '/cronbot/fragment_orders.php');
 $virtualAdminSource = file_get_contents(dirname(__DIR__) . '/telegram_products_admin.php');
 expectTrue(str_contains($fragmentSource, 'https://apiv2.nobitex.ir/market/stats?srcCurrency=gram&dstCurrency=rls'), 'Nobitex stats must use the current API host.');
 expectTrue(str_contains($fragmentSource, 'https://apiv2.nobitex.ir/v3/orderbook/GRAMIRT'), 'Nobitex orderbook must use the current API host.');
 expectTrue(!str_contains($fragmentSource, 'https://api.nobitex.ir/'), 'Legacy Nobitex API host is still used for Fragment pricing.');
+expectTrue(str_contains($rateWorkerSource, 'telegramFragmentRefreshRateIfDue()'), 'The scheduled worker does not refresh the GRAM rate.');
+expectTrue(str_contains($fragmentSource, '$now - 60'), 'The scheduled GRAM rate refresh is not limited to once a minute.');
 expectTrue(substr_count($installer, 'MIRZA_DOCKER_INSTANCE: \${BOT_SLUG}') >= 2, 'Docker app/worker instance identity is missing.');
 expectTrue(str_contains($installer, 'MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787'), 'Docker signer discovery is missing.');
 expectTrue(str_contains($installer, 'fragment-egress:'), 'Isolated signer egress network is missing.');

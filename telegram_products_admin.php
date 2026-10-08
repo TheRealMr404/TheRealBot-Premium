@@ -48,6 +48,13 @@ function virtualServicesAdminStyleRows($prefix, $id = null)
 
 function virtualServicesAdminKeyboard($rows)
 {
+    foreach ($rows as &$row) {
+        foreach ($row as &$button) {
+            if (is_array($button)) unset($button['style'], $button['icon_custom_emoji_id']);
+        }
+        unset($button);
+    }
+    unset($row);
     return json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
 }
 
