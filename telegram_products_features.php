@@ -16,8 +16,8 @@ function telegramProductsAdminRole($adminId)
 function telegramProductsAdminCan($adminId, $permission)
 {
     $permissions = [
-        'owner' => ['catalog', 'orders', 'finance', 'discounts', 'warranty', 'settings', 'roles'],
-        'manager' => ['catalog', 'orders', 'finance', 'discounts', 'warranty', 'settings'],
+        'owner' => ['catalog', 'orders', 'finance', 'discounts', 'warranty', 'settings', 'roles', 'identity'],
+        'manager' => ['catalog', 'orders', 'finance', 'discounts', 'warranty', 'settings', 'identity'],
         'operator' => ['orders', 'warranty'],
         'catalog' => ['catalog'],
         'support' => ['orders', 'warranty'],
@@ -317,9 +317,16 @@ function telegramProductsCheckout($orderId)
         $loyalty = telegramProductsLoyalty($from_id);
         $rows[] = [telegramProductsActionButton((int) $order['points_used'] > 0 ? 'لغو مصرف امتیاز' : 'استفاده از امتیاز (' . (int) $loyalty['points'] . ')', 'tgp_points_' . $order['id'], 'primary', 'action')];
     }
-    $canPay = $balance >= (int) $order['price'] || ($creditLimit > 0 && ($balance - (int) $order['price']) >= -$creditLimit);
-    if ($canPay) $rows[] = [telegramProductsActionButton('پرداخت نهایی', 'tgp_pay_' . $order['id'], 'success', 'success')];
-    else $rows[] = [telegramProductsActionButton('افزایش موجودی', 'account', 'success', 'success')];
+    $authMode = $order['auth_mode'] ?? 'none';
+    $identityReady = $authMode === 'none' || telegramProductsIdentitySatisfied($authMode, telegramProductsIdentityGet($from_id));
+    if (!$identityReady) {
+        $text .= "\n\n<b>احراز هویت این پلن هنوز تکمیل یا تأیید نشده است.</b>";
+        $rows[] = [telegramProductsActionButton('وضعیت احراز هویت', 'tgp_identity_start_' . $order['product_id'], 'primary', 'action')];
+    } elseif ($balance >= (int) $order['price'] || ($creditLimit > 0 && ($balance - (int) $order['price']) >= -$creditLimit)) {
+        $rows[] = [telegramProductsActionButton('پرداخت نهایی', 'tgp_pay_' . $order['id'], 'success', 'success')];
+    } else {
+        $rows[] = [telegramProductsActionButton('افزایش موجودی', 'account', 'success', 'success')];
+    }
     $rows[] = [telegramProductsActionButton('انصراف', 'tgp_view_' . $order['product_id'], 'danger', 'navigation')];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
@@ -467,6 +474,8 @@ function telegramProductsAdminPermissionForRequest($callback, $state = '', $inco
     $value = $callback !== '' ? $callback : $state;
     if (in_array($incomingText, ['🛍 خدمات مجازی', 'مدیریت خدمات مجازی'], true) || in_array($callback, ['vsa_home', 'vsa_exit'], true)) return null;
     if (strpos($value, 'vsa_fx_role') === 0) return 'roles';
+    if (strpos($value, 'vsa_identity_mode_') === 0 || strpos($value, 'vsa_identity_set_') === 0) return 'catalog';
+    if (strpos($value, 'vsa_identity_') === 0) return 'identity';
     if (strpos($value, 'vsa_fx_discount') === 0 || strpos($value, 'vsa_fx_d') === 0) return 'discounts';
     if (strpos($value, 'vsa_fx_w') === 0) return 'warranty';
     if (strpos($value, 'vsa_fx_loyalty') === 0 || strpos($value, 'vsa_fx_alert') === 0) return 'settings';

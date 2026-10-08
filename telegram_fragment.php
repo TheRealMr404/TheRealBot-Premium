@@ -102,6 +102,7 @@ function telegramFragmentEnsureSchema()
         'last_check' => 'هنوز انجام نشده',
         'last_check_ok' => '0',
         'live_pricing_enabled' => '1',
+        'auth_mode' => 'none',
         'stars_custom_enabled' => '1',
         'stars_custom_min' => '50',
         'stars_custom_max' => '1000000',
@@ -551,6 +552,7 @@ function telegramFragmentCreateDraft($productId, $recipient, $customAmount = nul
         telegramProductsReply('پلن انتخاب‌شده دیگر در دسترس نیست.', null);
         return false;
     }
+    if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return false;
     $recipient = strtolower(ltrim(trim((string) $recipient), '@'));
     if (!preg_match('/^[a-z][a-z0-9_]{4,31}$/', $recipient)) {
         telegramProductsReply("<b>نام کاربری معتبر نیست</b>\n\nدوباره بفرستید. نمونه: <code>username</code>", null);
@@ -629,6 +631,12 @@ function telegramFragmentPayOrder($orderId)
         if (!$order || $order['status'] !== 'draft') {
             $pdo->rollBack();
             telegramProductsReply('این سفارش قبلاً پرداخت شده یا معتبر نیست.', null);
+            return;
+        }
+        $authMode = telegramFragmentSetting('auth_mode', 'none');
+        if ($authMode !== 'none' && !telegramProductsIdentitySatisfied($authMode, telegramProductsIdentityGet($from_id, true))) {
+            $pdo->rollBack();
+            telegramProductsReply('احراز هویت خرید خودکار هنوز تکمیل یا تأیید نشده است؛ مبلغی کسر نشد.', json_encode(['inline_keyboard' => [[telegramFragmentButton('وضعیت احراز', 'tgp_identity_start_fg', 'primary', 'action')]]], JSON_UNESCAPED_UNICODE));
             return;
         }
         $product = $order['product_id'] === null ? null : telegramFragmentProduct($order['product_id'], true);
@@ -771,6 +779,7 @@ function telegramFragmentHandleUserRequestInner()
 {
     global $datain, $text, $user, $from_id;
     $state = (string) ($user['step'] ?? '');
+    if (strpos((string) $datain, 'tgp_identity_') === 0) return false;
     if (strpos((string) $datain, 'tgp_fg_') !== 0 && strpos($state, 'tgp_fg_') !== 0) return false;
     telegramFragmentEnsureSchema();
     if (telegramFragmentSetting('enabled', '0') !== '1') {
@@ -819,6 +828,7 @@ function telegramFragmentHandleUserRequestInner()
     if (preg_match('/^tgp_fg_kind_(stars|premium)$/', $datain, $m)) { telegramFragmentShowProducts($m[1]); return true; }
     if ($datain === 'tgp_fg_custom_stars') {
         if (telegramFragmentSetting('stars_custom_enabled', '1') !== '1') { telegramFragmentShowProducts('stars'); return true; }
+        if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return true;
         [$min, $max] = telegramFragmentCustomStarsBounds();
         step('tgp_fg_custom_amount', $from_id);
         $user['step'] = 'tgp_fg_custom_amount';
@@ -832,6 +842,7 @@ function telegramFragmentHandleUserRequestInner()
     if (preg_match('/^tgp_fg_buy_(\d+)$/', $datain, $m)) {
         $product = telegramFragmentProduct($m[1], true);
         if (!$product) { telegramProductsReply('پلن در دسترس نیست.', null); return true; }
+        if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return true;
         step('tgp_fg_recipient_' . $product['id'], $from_id);
         $user['step'] = 'tgp_fg_recipient_' . $product['id'];
         $rows = [[telegramFragmentButton('انصراف', 'tgp_fg_p_' . $product['id'], 'danger', 'navigation')]];
@@ -1041,6 +1052,7 @@ function telegramFragmentAdminHome()
     $text .= 'نسخه کیف پول: <code>' . telegramFragmentEscape(strtoupper($status['version'])) . "</code>\n";
     $text .= 'کلید TON RPC: ' . ($status['api_key'] ? '✅ ثبت شده' : '⚪ ثبت نشده') . "\n";
     $text .= 'نمایش نام فرستنده: ' . ($showSender ? '✅ روشن' : '❌ خاموش') . "\n";
+    $text .= 'احراز هویت خرید: ' . telegramProductsIdentityModeLabel(telegramFragmentSetting('auth_mode', 'none')) . "\n";
     $text .= 'هشدار موجودی کمتر از: <code>' . ($low > 0 ? $low . ' TON' : 'خاموش') . "</code>\n";
     $text .= "پلن‌ها: <code>{$plans}</code> | سفارش‌های باز: <code>{$queue}</code>\n";
     $text .= 'آخرین بررسی: ' . telegramFragmentEscape($last) . '</blockquote>';
@@ -1067,6 +1079,7 @@ function telegramFragmentAdminHome()
             ['text' => 'بررسی اتصال', 'callback_data' => 'vsa_fg_test'],
         ],
         [['text' => 'مدیریت پکیج‌ها', 'callback_data' => 'vsa_fg_products', 'style' => 'primary']],
+        [['text' => 'احراز هویت خرید', 'callback_data' => 'vsa_fg_identity']],
         [['text' => 'قیمت‌گذاری و مقدار دلخواه', 'callback_data' => 'vsa_fg_pricing', 'style' => 'success']],
         [['text' => 'سفارش‌های Fragment', 'callback_data' => 'vsa_fg_orders']],
         [['text' => 'راهنما', 'callback_data' => 'vsa_fg_help']],
@@ -1373,6 +1386,20 @@ function telegramFragmentAdminHandleRequest()
         telegramFragmentSetSetting('enabled', $enable ? '1' : '0'); telegramFragmentAdminHome(); return true;
     }
     if ($datain === 'vsa_fg_dryrun') { telegramFragmentAdminHome(); return true; }
+    if ($datain === 'vsa_fg_identity') {
+        virtualServicesAdminReply('<b>احراز هویت خرید خودکار</b>' . "\n\nوضعیت فعلی: " . telegramProductsIdentityModeLabel(telegramFragmentSetting('auth_mode', 'none')), [
+            [['text' => 'بدون احراز', 'callback_data' => 'vsa_fg_identity_set_none']],
+            [['text' => 'فقط شماره', 'callback_data' => 'vsa_fg_identity_set_phone']],
+            [['text' => 'احراز کامل + تأیید مدیر', 'callback_data' => 'vsa_fg_identity_set_full']],
+            [['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']],
+        ]);
+        return true;
+    }
+    if (preg_match('/^vsa_fg_identity_set_(none|phone|full)$/', $datain, $m)) {
+        telegramFragmentSetSetting('auth_mode', $m[1]);
+        telegramFragmentAdminHome();
+        return true;
+    }
     if ($datain === 'vsa_fg_wallet') {
         virtualServicesAdminSetState('vsa_fg_wallet_input');
         virtualServicesAdminReply("<b>ثبت کیف پول TON</b>\n\nعبارت بازیابی ۲۴ کلمه‌ای را در یک پیام بفرستید.\n\nپیام فوراً حذف و کلید فقط به‌صورت رمزنگاری‌شده در سرویس محلی امضا نگهداری می‌شود.", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_home', 'style' => 'danger']]]);

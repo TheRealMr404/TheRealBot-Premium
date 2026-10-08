@@ -138,11 +138,15 @@ function virtualServicesAdminSection($section)
             [['text' => 'گارانتی' . ($warranties ? " ({$warranties})" : ''), 'callback_data' => 'vsa_fx_warranties']],
         ];
     } elseif ($section === 'customers') {
+        $identityPending = (int) $pdo->query("SELECT COUNT(*) FROM telegram_product_identity WHERE status='pending'")->fetchColumn();
         $text = "<b>مشتریان و بازاریابی</b>\n\nابزارهای فروش، وفاداری مشتری و اعلان‌ها را مدیریت کنید.";
         $rows = [
             [['text' => 'کدهای تخفیف', 'callback_data' => 'vsa_fx_discounts'], ['text' => 'باشگاه مشتریان', 'callback_data' => 'vsa_fx_loyalty']],
             [['text' => 'اعلان‌های حرفه‌ای', 'callback_data' => 'vsa_fx_alerts']],
         ];
+        if (telegramProductsAdminCan($from_id, 'identity')) {
+            $rows[] = [['text' => 'احراز هویت' . ($identityPending ? " ({$identityPending})" : ''), 'callback_data' => 'vsa_identity_list']];
+        }
     } else {
         $text = "<b>تنظیمات فروشگاه</b>\n\nمتن‌ها، وضعیت فروشگاه، گزارش‌ها و سطح دسترسی مدیران را تنظیم کنید.";
         $rows = [
@@ -340,6 +344,7 @@ function virtualServicesAdminProduct($productId)
     $text .= 'قیمت: ' . telegramProductsMoney($product['price']) . "\n";
     $text .= "مدل فروش: {$mode} | تحویل: {$delivery} | وضعیت: {$status}\n";
     $text .= 'نمایش برای: ' . ($scopeLabels[$product['agent_scope']] ?? telegramProductsEscape($product['agent_scope'])) . "\n";
+    $text .= 'احراز هویت: ' . telegramProductsIdentityModeLabel($product['auth_mode'] ?? 'none') . "\n";
     $text .= 'اطلاعات درخواستی: ' . telegramProductsSafeCustomText($product['input_label'] ?: 'ندارد') . "\n";
     $text .= 'رنگ دکمه: ' . virtualServicesAdminStyleLabel($product['button_style']) . ' | ایموجی: ' . (!empty($product['button_emoji_id']) ? '<code>' . telegramProductsEscape($product['button_emoji_id']) . '</code>' : 'ندارد') . "\n";
     $text .= 'هشدار موجودی: ' . (int) $product['low_stock_threshold'] . ' | سقف خرید هر کاربر: ' . ((int) $product['max_per_user'] ?: 'نامحدود') . "\n";
@@ -361,6 +366,7 @@ function virtualServicesAdminProduct($productId)
             ['text' => 'مدل: ' . $mode, 'callback_data' => 'vsa_fx_mode_' . $product['id']],
             ['text' => 'سطح کاربران', 'callback_data' => 'vsa_pscope_' . $product['id']],
         ],
+        [['text' => 'سطح احراز هویت', 'callback_data' => 'vsa_identity_mode_' . $product['id']]],
         [
             ['text' => 'مدت گارانتی', 'callback_data' => 'vsa_fx_product_warranty_' . $product['id']],
             ['text' => 'تعداد ارسال مجدد', 'callback_data' => 'vsa_fx_product_resends_' . $product['id']],
@@ -916,6 +922,9 @@ function telegramProductsAdminPanelHandleRequest()
             }
         }
         if (function_exists('telegramFragmentAdminHandleRequest') && telegramFragmentAdminHandleRequest()) {
+            return true;
+        }
+        if (telegramProductsIdentityHandleAdmin()) {
             return true;
         }
         if (function_exists('telegramProductsAdminFeatureHandleRequest') && telegramProductsAdminFeatureHandleRequest()) {

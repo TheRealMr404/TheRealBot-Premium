@@ -2,11 +2,13 @@
 
 const TELEGRAM_PRODUCTS_BUTTON = 'خدمات مجازی';
 
+require_once __DIR__ . '/telegram_products_identity.php';
+
 function telegramProductsEnsureColumn($table, $column, $definition)
 {
     global $pdo;
 
-    $allowed = ['telegram_product_categories', 'telegram_products', 'telegram_product_orders', 'telegram_product_discounts'];
+    $allowed = ['telegram_product_categories', 'telegram_products', 'telegram_product_orders', 'telegram_product_discounts', 'telegram_product_identity'];
     if (!in_array($table, $allowed, true)) {
         throw new InvalidArgumentException('Invalid virtual services table.');
     }
@@ -197,6 +199,21 @@ function telegramProductsEnsureSchema()
         updated_at DATETIME NULL DEFAULT CURRENT_TIMESTAMP
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+    $pdo->exec("CREATE TABLE IF NOT EXISTS telegram_product_identity (
+        user_id VARCHAR(64) CHARACTER SET ascii PRIMARY KEY,
+        phone VARCHAR(20) NULL,
+        phone_verified_at DATETIME NULL,
+        full_name VARCHAR(190) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL,
+        national_id_last4 CHAR(4) NULL,
+        document_file_id VARCHAR(255) NULL,
+        document_kind VARCHAR(10) NULL,
+        status VARCHAR(20) NOT NULL DEFAULT 'none',
+        submitted_at DATETIME NULL,
+        reviewed_at DATETIME NULL,
+        reviewer_id VARCHAR(200) NULL,
+        INDEX idx_tg_identity_review (status, submitted_at)
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
+
     telegramProductsEnsureColumn('telegram_products', 'input_label', "VARCHAR(190) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL AFTER `delivery_type`");
     telegramProductsEnsureColumn('telegram_products', 'group_id', "INT UNSIGNED NULL AFTER `category_id`");
     telegramProductsEnsureColumn('telegram_products', 'agent_scope', "VARCHAR(50) NOT NULL DEFAULT 'all' AFTER `input_label`");
@@ -207,6 +224,8 @@ function telegramProductsEnsureSchema()
     telegramProductsEnsureColumn('telegram_products', 'low_stock_threshold', "INT UNSIGNED NOT NULL DEFAULT 3 AFTER `button_emoji_id`");
     telegramProductsEnsureColumn('telegram_products', 'max_per_user', "INT UNSIGNED NOT NULL DEFAULT 0 AFTER `low_stock_threshold`");
     telegramProductsEnsureColumn('telegram_products', 'product_mode', "VARCHAR(20) NOT NULL DEFAULT 'legacy' AFTER `delivery_type`");
+    telegramProductsEnsureColumn('telegram_products', 'auth_mode', "VARCHAR(20) NOT NULL DEFAULT 'none' AFTER `product_mode`");
+    telegramProductsEnsureColumn('telegram_product_identity', 'document_kind', 'VARCHAR(10) NULL AFTER document_file_id');
     telegramProductsEnsureColumn('telegram_products', 'warranty_days', "INT UNSIGNED NOT NULL DEFAULT 0 AFTER `max_per_user`");
     telegramProductsEnsureColumn('telegram_products', 'max_resends', "INT UNSIGNED NOT NULL DEFAULT 1 AFTER `warranty_days`");
     telegramProductsEnsureColumn('telegram_product_orders', 'customer_input', "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL AFTER `status`");
@@ -717,6 +736,9 @@ function telegramProductsShowProduct($productId)
     }
     $text .= '<b>قیمت:</b> ' . telegramProductsMoney($product['price']) . "\n";
     $text .= '<b>نوع تحویل:</b> ' . $delivery;
+    if (($product['auth_mode'] ?? 'none') !== 'none') {
+        $text .= "\n<b>احراز هویت:</b> " . telegramProductsIdentityModeLabel($product['auth_mode']);
+    }
     if ($product['delivery_type'] === 'auto') {
         $text .= "\n<b>موجودی:</b> " . (int) $product['stock_count'];
     }
@@ -760,6 +782,7 @@ function telegramProductsCreateDraft($productId, $customerInput = null)
         telegramProductsReply(telegramProductsSafeCustomText(telegramProductsSetting('out_of_stock_text', 'این محصول در حال حاضر قابل خرید نیست.')), null);
         return;
     }
+    if (!telegramProductsIdentityGate($product)) return;
 
     $maxPerUser = (int) ($product['max_per_user'] ?? 0);
     if ($maxPerUser > 0) {
@@ -802,6 +825,12 @@ function telegramProductsPayOrder($orderId)
         if (!$currentProduct || (int) $currentProduct['is_active'] !== 1) {
             $pdo->rollBack();
             telegramProductsReply('این محصول غیرفعال شده است و مبلغی کسر نشد.', null);
+            return;
+        }
+        $authMode = $currentProduct['auth_mode'] ?? 'none';
+        if ($authMode !== 'none' && !telegramProductsIdentitySatisfied($authMode, telegramProductsIdentityGet($from_id, true))) {
+            $pdo->rollBack();
+            telegramProductsReply('احراز هویت این پلن هنوز تکمیل یا تأیید نشده است؛ مبلغی کسر نشد.', json_encode(['inline_keyboard' => [[telegramProductsActionButton('وضعیت احراز', 'tgp_identity_start_' . $order['product_id'], 'primary', 'action')]]], JSON_UNESCAPED_UNICODE));
             return;
         }
         $originalPrice = (int) ($order['original_price'] ?: $order['price']);
@@ -1005,6 +1034,9 @@ function telegramProductsShowOrder($orderId)
         $text .= "\n<b>اطلاعات تحویل:</b>\n<code>" . telegramProductsEscape($order['delivery_payload']) . '</code>';
     }
     $rows = [];
+    if ($order['status'] === 'pending') {
+        $rows[] = [telegramProductsActionButton('بازگشت به فاکتور', 'tgp_checkout_' . $order['id'], 'primary', 'action')];
+    }
     if ($order['status'] === 'delivered' && !empty($order['delivery_payload']) && (int) $order['resend_count'] < (int) ($order['max_resends'] ?? 0)) {
         $rows[] = [telegramProductsActionButton('ارسال مجدد اطلاعات تحویل', 'tgp_selfresend_' . $order['id'], 'primary', 'action')];
     }
@@ -1185,6 +1217,9 @@ function telegramProductsHandleRequestInternal()
     if (function_exists('telegramFragmentHandleUserRequest') && telegramFragmentHandleUserRequest()) {
         return true;
     }
+    if (telegramProductsIdentityHandleUser()) {
+        return true;
+    }
     if (function_exists('telegramProductsFeatureUserHandle') && telegramProductsFeatureUserHandle()) {
         return true;
     }
@@ -1261,6 +1296,7 @@ function telegramProductsHandleRequestInternal()
             telegramProductsReply('این محصول در دسترس نیست.', null);
             return true;
         }
+        if (!telegramProductsIdentityGate($product)) return true;
         if (($product['product_mode'] ?? '') === 'form' && function_exists('telegramProductsStartForm') && telegramProductsFields($product['id'])) {
             telegramProductsStartForm($product);
             return true;
