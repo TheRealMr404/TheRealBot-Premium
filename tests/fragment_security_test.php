@@ -30,6 +30,17 @@ expectTrue(!str_contains($fragmentCard, 'SQLSTATE') && !str_contains($fragmentCa
 $stored = telegramFragmentStoredError(new FragmentError('signer_down', 'Bearer top-secret http://signer:8787'));
 expectTrue($stored === 'signer_down|سرویس پردازش تراکنش موقتاً در دسترس نیست.', 'Stored Fragment error is not sanitized.');
 
+$price = telegramFragmentPriceFromQuote(1.25, 300000, 10, 5000, 1000);
+expectTrue($price['base'] === 375000 && $price['final'] === 418000 && $price['profit'] === 43000, 'Live price calculation is incorrect.');
+expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['ton-rls' => ['bestSell' => '3200000']]], 'rls') === 320000.0, 'Nobitex RLS rate conversion is incorrect.');
+expectTrue(telegramFragmentExtractNobitexRate(['asks' => [['321000', '2']]], 'irt') === 321000.0, 'Nobitex IRT fallback parsing is incorrect.');
+try {
+    telegramFragmentPriceFromQuote(0, 300000, 10, 0, 1000);
+    throw new RuntimeException('Invalid Fragment quote was accepted.');
+} catch (RuntimeException $e) {
+    expectTrue(str_starts_with($e->getMessage(), 'price_unavailable|'), 'Invalid quote returned an unsafe error.');
+}
+
 $dir = sys_get_temp_dir() . DIRECTORY_SEPARATOR . 'mirza-fragment-test-' . bin2hex(random_bytes(4));
 FragmentKit::boot([
     'dataDir' => $dir,
@@ -59,6 +70,8 @@ try {
 $installer = file_get_contents(dirname(__DIR__) . '/install.sh');
 $signerSource = file_get_contents(dirname(__DIR__) . '/services/fragment-signer/server.js');
 $adminSource = file_get_contents(dirname(__DIR__) . '/admin.php');
+$fragmentSource = file_get_contents(dirname(__DIR__) . '/telegram_fragment.php');
+$virtualAdminSource = file_get_contents(dirname(__DIR__) . '/telegram_products_admin.php');
 expectTrue(substr_count($installer, 'MIRZA_DOCKER_INSTANCE: \${BOT_SLUG}') >= 2, 'Docker app/worker instance identity is missing.');
 expectTrue(str_contains($installer, 'MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787'), 'Docker signer discovery is missing.');
 expectTrue(str_contains($installer, 'fragment-egress:'), 'Isolated signer egress network is missing.');
@@ -68,6 +81,11 @@ expectTrue(str_contains($signerSource, 'crypto.timingSafeEqual'), 'Signer token 
 expectTrue(!str_contains($signerSource, '${token}\n('), 'Signer logs the bearer token.');
 expectTrue(str_contains($signerSource, "{ mode: 0o600 }"), 'Signer state is not persisted with restrictive permissions.');
 expectTrue(str_contains($adminSource, '$updateMessage = "✅ بروزرسانی ربات با موفقیت انجام شد.";'), 'Successful update message contains extra runtime details.');
+expectTrue(str_contains($fragmentSource, "'dryRun' => false"), 'Fragment purchases are not forced to real mode.');
+expectTrue(!str_contains($fragmentSource, "telegramFragmentSetting('dry_run'"), 'Legacy dry-run setting still affects execution.');
+expectTrue(str_contains($fragmentSource, 'tgp_fg_custom_stars') && str_contains($fragmentSource, 'stars_custom_min'), 'Custom Stars flow or limits are missing.');
+expectTrue(str_contains($fragmentSource, 'vsa_fg_pricing') && str_contains($fragmentSource, 'profit_percent_stars'), 'Live pricing admin controls are missing.');
+expectTrue(str_contains($virtualAdminSource, 'vsa_section_catalog') && str_contains($virtualAdminSource, 'vsa_section_settings'), 'Virtual services admin sections are missing.');
 
 foreach (glob($dir . DIRECTORY_SEPARATOR . '*') ?: [] as $file) @unlink($file);
 @rmdir($dir);

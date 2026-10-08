@@ -99,38 +99,54 @@ function virtualServicesAdminHome()
     $text .= "موجودی خودکار: <code>{$stockCount}</code> | منتظر تحویل: <code>{$pendingCount}</code>";
 
     $rows = [
-        [
-            ['text' => 'دسته‌بندی‌ها', 'callback_data' => 'vsa_categories'],
-            ['text' => 'محصولات', 'callback_data' => 'vsa_groups'],
-        ],
-        [['text' => 'پلن‌های قابل خرید', 'callback_data' => 'vsa_products']],
-        [
-            ['text' => 'سفارش‌های منتظر تحویل' . ($pendingCount ? " ({$pendingCount})" : ''), 'callback_data' => 'vsa_orders'],
-        ],
-        [
-            ['text' => 'سفارش‌های اخیر', 'callback_data' => 'vsa_recent'],
-            ['text' => 'آمار فروش', 'callback_data' => 'vsa_stats'],
-        ],
-        [
-            ['text' => 'کدهای تخفیف', 'callback_data' => 'vsa_fx_discounts'],
-            ['text' => 'گارانتی' . ($warrantyCount ? " ({$warrantyCount})" : ''), 'callback_data' => 'vsa_fx_warranties'],
-        ],
-        [
-            ['text' => 'باشگاه مشتریان', 'callback_data' => 'vsa_fx_loyalty'],
-            ['text' => 'اعلان‌های حرفه‌ای', 'callback_data' => 'vsa_fx_alerts'],
-        ],
-        [
-            ['text' => 'متن‌ها و تنظیمات', 'callback_data' => 'vsa_settings'],
-            ['text' => $enabled ? 'غیرفعال‌سازی' : 'فعال‌سازی', 'callback_data' => 'vsa_toggle'],
-        ],
-        [['text' => 'بازگشت به پنل مدیریت', 'callback_data' => 'vsa_exit']],
+        [['text' => 'کاتالوگ و محصولات', 'callback_data' => 'vsa_section_catalog', 'style' => 'primary']],
+        [['text' => 'سفارش‌ها و گزارش فروش' . ($pendingCount ? " ({$pendingCount})" : ''), 'callback_data' => 'vsa_section_orders', 'style' => 'success']],
+        [['text' => 'مشتریان، تخفیف و اعلان‌ها', 'callback_data' => 'vsa_section_customers']],
+        [['text' => 'تنظیمات فروشگاه', 'callback_data' => 'vsa_section_settings']],
+        [['text' => 'بازگشت به پنل مدیریت', 'callback_data' => 'vsa_exit', 'style' => 'danger']],
     ];
-    if (function_exists('telegramProductsAdminCan') && telegramProductsAdminCan($from_id, 'roles')) {
-        array_splice($rows, count($rows) - 1, 0, [[['text' => 'سطح دسترسی ادمین‌ها', 'callback_data' => 'vsa_fx_roles']]]);
-    }
     if (function_exists('telegramFragmentAdminHomeButton')) {
         telegramFragmentAdminHomeButton($rows);
     }
+    virtualServicesAdminReply($text, $rows);
+}
+
+function virtualServicesAdminSection($section)
+{
+    global $pdo, $from_id;
+    $pending = (int) $pdo->query("SELECT COUNT(*) FROM telegram_product_orders WHERE status='paid_pending'")->fetchColumn();
+    $warranties = (int) $pdo->query("SELECT COUNT(*) FROM telegram_product_warranties WHERE status='pending'")->fetchColumn();
+    $enabled = telegramProductsSetting('enabled', '1') === '1';
+    if ($section === 'catalog') {
+        $text = "<b>کاتالوگ و محصولات</b>\n\nساختار دسته‌بندی، محصول و پلن‌های قابل خرید را از این بخش مدیریت کنید.";
+        $rows = [
+            [['text' => 'دسته‌بندی‌ها', 'callback_data' => 'vsa_categories'], ['text' => 'محصولات', 'callback_data' => 'vsa_groups']],
+            [['text' => 'پلن‌های قابل خرید', 'callback_data' => 'vsa_products', 'style' => 'primary']],
+        ];
+    } elseif ($section === 'orders') {
+        $text = "<b>سفارش‌ها و گزارش فروش</b>\n\nسفارش‌های در انتظار، سوابق، آمار و درخواست‌های گارانتی در یک بخش قرار گرفته‌اند.";
+        $rows = [
+            [['text' => 'سفارش‌های منتظر تحویل' . ($pending ? " ({$pending})" : ''), 'callback_data' => 'vsa_orders', 'style' => $pending ? 'danger' : 'primary']],
+            [['text' => 'سفارش‌های اخیر', 'callback_data' => 'vsa_recent'], ['text' => 'آمار فروش', 'callback_data' => 'vsa_stats']],
+            [['text' => 'گارانتی' . ($warranties ? " ({$warranties})" : ''), 'callback_data' => 'vsa_fx_warranties']],
+        ];
+    } elseif ($section === 'customers') {
+        $text = "<b>مشتریان و بازاریابی</b>\n\nابزارهای فروش، وفاداری مشتری و اعلان‌ها را مدیریت کنید.";
+        $rows = [
+            [['text' => 'کدهای تخفیف', 'callback_data' => 'vsa_fx_discounts'], ['text' => 'باشگاه مشتریان', 'callback_data' => 'vsa_fx_loyalty']],
+            [['text' => 'اعلان‌های حرفه‌ای', 'callback_data' => 'vsa_fx_alerts']],
+        ];
+    } else {
+        $text = "<b>تنظیمات فروشگاه</b>\n\nمتن‌ها، وضعیت فروشگاه، گزارش‌ها و سطح دسترسی مدیران را تنظیم کنید.";
+        $rows = [
+            [['text' => 'متن‌ها و تنظیمات', 'callback_data' => 'vsa_settings']],
+            [['text' => $enabled ? 'غیرفعال‌سازی فروشگاه' : 'فعال‌سازی فروشگاه', 'callback_data' => 'vsa_toggle', 'style' => $enabled ? 'danger' : 'success']],
+        ];
+        if (function_exists('telegramProductsAdminCan') && telegramProductsAdminCan($from_id, 'roles')) {
+            $rows[] = [['text' => 'سطح دسترسی ادمین‌ها', 'callback_data' => 'vsa_fx_roles']];
+        }
+    }
+    $rows[] = [['text' => 'بازگشت', 'callback_data' => 'vsa_home', 'style' => 'danger']];
     virtualServicesAdminReply($text, $rows);
 }
 
@@ -919,9 +935,13 @@ function telegramProductsAdminPanelHandleRequest()
             sendmessage($from_id, 'به پنل مدیریت بازگشتید.', $keyboardadmin, 'HTML');
             return true;
         }
+        if (preg_match('/^vsa_section_(catalog|orders|customers|settings)$/', $datain, $match)) {
+            virtualServicesAdminSection($match[1]);
+            return true;
+        }
         if ($datain === 'vsa_toggle') {
             telegramProductsSetSetting('enabled', telegramProductsSetting('enabled', '1') === '1' ? '0' : '1');
-            virtualServicesAdminHome();
+            virtualServicesAdminSection('settings');
             return true;
         }
         if ($datain === 'vsa_categories') {

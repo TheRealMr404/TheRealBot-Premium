@@ -16,6 +16,22 @@ function telegramFragmentDigits($value)
     ]);
 }
 
+function telegramFragmentEnsureColumn($table, $column, $definition)
+{
+    global $pdo;
+    $allowed = ['telegram_fragment_orders'];
+    if (!in_array($table, $allowed, true) || !preg_match('/^[a-z0-9_]+$/i', $column)) return;
+    $quotedColumn = $pdo->quote($column);
+    $stmt = $pdo->query("SHOW COLUMNS FROM `{$table}` LIKE {$quotedColumn}");
+    if (!$stmt || !$stmt->fetch(PDO::FETCH_ASSOC)) {
+        try {
+            $pdo->exec("ALTER TABLE `{$table}` ADD COLUMN `{$column}` {$definition}");
+        } catch (PDOException $e) {
+            if ((int) ($e->errorInfo[1] ?? 0) !== 1060) throw $e;
+        }
+    }
+}
+
 function telegramFragmentEnsureSchema()
 {
     global $pdo;
@@ -67,10 +83,16 @@ function telegramFragmentEnsureSchema()
         CONSTRAINT fk_tfo_product FOREIGN KEY (product_id) REFERENCES telegram_fragment_products(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'base_price', 'BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER price');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'quote_ton', 'DECIMAL(20,9) NULL AFTER base_price');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'ton_rate', 'BIGINT UNSIGNED NULL AFTER quote_ton');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'profit_amount', 'BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER ton_rate');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'pricing_mode', "VARCHAR(20) NOT NULL DEFAULT 'fixed' AFTER profit_amount");
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'quoted_at', 'DATETIME NULL AFTER pricing_mode');
+
     $insert = $pdo->prepare('INSERT IGNORE INTO telegram_fragment_settings (setting_key, setting_value) VALUES (?, ?)');
     foreach ([
         'enabled' => '0',
-        'dry_run' => '1',
         'menu_title' => 'استارز و پریمیوم خودکار',
         'wallet_version' => 'v4r2',
         'daily_limit_ton' => '100',
@@ -79,6 +101,20 @@ function telegramFragmentEnsureSchema()
         'show_sender' => '0',
         'last_check' => 'هنوز انجام نشده',
         'last_check_ok' => '0',
+        'live_pricing_enabled' => '1',
+        'stars_custom_enabled' => '1',
+        'stars_custom_min' => '50',
+        'stars_custom_max' => '1000000',
+        'profit_percent_stars' => '10',
+        'profit_percent_premium' => '10',
+        'profit_fixed_stars' => '0',
+        'profit_fixed_premium' => '0',
+        'price_rounding' => '1000',
+        'quote_valid_minutes' => '10',
+        'button_emoji_stars' => '5280962371207077415',
+        'button_emoji_premium' => '5350481089817232086',
+        'button_emoji_action' => '5348090777308251395',
+        'button_emoji_navigation' => '5348418461838098123',
     ] as $key => $value) {
         $insert->execute([$key, $value]);
     }
@@ -160,7 +196,7 @@ function telegramFragmentBoot()
         'signerUrl' => $config['signerUrl'],
         'signerToken' => $config['signerToken'],
         'baseUrl' => 'https://fragment.com',
-        'dryRun' => telegramFragmentSetting('dry_run', '1') === '1',
+        'dryRun' => false,
         'pollMs' => 3500,
         'paymentMethod' => 'ton',
         'dailyLimitTon' => (float) telegramFragmentSetting('daily_limit_ton', '100'),
@@ -209,7 +245,6 @@ function telegramFragmentSafeReason($error)
         'daily_limit' => 'سقف خرید روزانه کیف پول TON تکمیل شده است.',
         'amount_mismatch' => 'مبلغ اعلام‌شده با تراکنش یکسان نبود و خرید برای امنیت متوقف شد.',
         'insufficient_usdt' => 'موجودی کیف پول پرداخت برای این سفارش کافی نیست.',
-        'dry_run' => 'فروش خودکار هنوز در حالت آزمایشی است.',
         'confirm_pending' => 'تراکنش ارسال شده و هنوز در انتظار تأیید شبکه است.',
         'tx_failed' => 'تراکنش در شبکه تأیید نشد.',
         'page_changed' => 'ارتباط با Fragment نیازمند بازبینی است.',
@@ -219,6 +254,8 @@ function telegramFragmentSafeReason($error)
         'temporary_error' => 'پردازش خودکار سفارش در این لحظه کامل نشد.',
         'unavailable' => 'Fragment موقتاً در دسترس نیست.',
         'network' => 'ارتباط با Fragment موقتاً برقرار نشد.',
+        'rate_unavailable' => 'نرخ لحظه‌ای TON موقتاً در دسترس نیست؛ چند لحظه دیگر دوباره تلاش کنید.',
+        'price_unavailable' => 'قیمت لحظه‌ای این محصول موقتاً قابل محاسبه نیست.',
     ];
     if (isset($reasons[$code])) return $reasons[$code];
     if (preg_match('/already.*premium|پریمیوم.*(فعال|دارد)/u', $message)) return $reasons['already_premium'];
@@ -259,6 +296,123 @@ function telegramFragmentMoney($value)
     return number_format((int) $value) . ' تومان';
 }
 
+function telegramFragmentButton($text, $callbackData, $style = 'primary', $emojiSlot = 'action')
+{
+    $setting = [
+        'stars' => 'button_emoji_stars',
+        'premium' => 'button_emoji_premium',
+        'navigation' => 'button_emoji_navigation',
+        'action' => 'button_emoji_action',
+    ][$emojiSlot] ?? 'button_emoji_action';
+    return telegramProductsStyledButton($text, $callbackData, $style, telegramFragmentSetting($setting, ''));
+}
+
+function telegramFragmentPriceFromQuote($totalTon, $tonTomanRate, $profitPercent, $fixedProfit, $rounding)
+{
+    $totalTon = (float) $totalTon;
+    $tonTomanRate = (float) $tonTomanRate;
+    $profitPercent = max(0, min(10000, (float) $profitPercent));
+    $fixedProfit = max(0, (int) $fixedProfit);
+    $rounding = max(1, (int) $rounding);
+    if (!is_finite($totalTon) || !is_finite($tonTomanRate) || $totalTon <= 0 || $tonTomanRate <= 0) {
+        throw new RuntimeException('price_unavailable|قیمت لحظه‌ای معتبر دریافت نشد.');
+    }
+    $base = (int) ceil($totalTon * $tonTomanRate);
+    $beforeRound = (int) ceil($base * (1 + ($profitPercent / 100)) + $fixedProfit);
+    $final = (int) (ceil($beforeRound / $rounding) * $rounding);
+    return [
+        'base' => $base,
+        'final' => max(1, $final),
+        'profit' => max(0, $final - $base),
+    ];
+}
+
+function telegramFragmentExtractNobitexRate(array $payload, $marketType)
+{
+    if ($marketType === 'rls') {
+        $market = is_array($payload['stats']['ton-rls'] ?? null) ? $payload['stats']['ton-rls'] : [];
+        foreach (['bestSell', 'mark', 'latest', 'bestBuy'] as $key) {
+            if (isset($market[$key]) && is_numeric($market[$key]) && (float) $market[$key] > 0) return (float) $market[$key] / 10;
+        }
+        return 0.0;
+    }
+    $candidate = $payload['asks'][0][0] ?? ($payload['lastTradePrice'] ?? 0);
+    return is_numeric($candidate) && (float) $candidate > 0 ? (float) $candidate : 0.0;
+}
+
+function telegramFragmentNobitexTonRate($force = false)
+{
+    static $requestRate = null;
+    if (!$force && $requestRate !== null) return $requestRate;
+    $cached = (float) telegramFragmentSetting('nobitex_ton_toman', '0');
+    $cachedAt = strtotime(telegramFragmentSetting('nobitex_ton_rate_at', '1970-01-01 00:00:00')) ?: 0;
+    if (!$force && $cached > 0 && $cachedAt >= time() - 60) return $requestRate = $cached;
+
+    require_once __DIR__ . '/fragment-kit/php/HttpClient.php';
+    $rate = 0.0;
+    try {
+        $response = HttpClient::send('GET', 'https://api.nobitex.ir/market/stats?srcCurrency=ton&dstCurrency=rls', ['timeout' => 8]);
+        if ((int) $response['status'] >= 200 && (int) $response['status'] < 300) {
+            $payload = json_decode((string) $response['body'], true);
+            if (is_array($payload)) $rate = telegramFragmentExtractNobitexRate($payload, 'rls');
+        }
+    } catch (Throwable $e) {
+        telegramFragmentLogFailure('nobitex rate', $e);
+    }
+    if ($rate <= 0) {
+        try {
+            $response = HttpClient::send('GET', 'https://api.nobitex.ir/v3/orderbook/TONIRT', ['timeout' => 8]);
+            if ((int) $response['status'] >= 200 && (int) $response['status'] < 300) {
+                $payload = json_decode((string) $response['body'], true);
+                if (is_array($payload)) $rate = telegramFragmentExtractNobitexRate($payload, 'irt');
+            }
+        } catch (Throwable $e) {
+            telegramFragmentLogFailure('nobitex fallback rate', $e);
+        }
+    }
+    if ($rate > 1000 && $rate < 10000000000) {
+        telegramFragmentSetSetting('nobitex_ton_toman', (string) round($rate, 2));
+        telegramFragmentSetSetting('nobitex_ton_rate_at', date('Y-m-d H:i:s'));
+        return $requestRate = $rate;
+    }
+    if ($cached > 0 && $cachedAt >= time() - 900) return $requestRate = $cached;
+    throw new RuntimeException('rate_unavailable|نرخ لحظه‌ای TON موقتاً در دسترس نیست.');
+}
+
+function telegramFragmentLivePrice($kind, $recipient, $amount)
+{
+    telegramFragmentBoot();
+    $quote = FragmentKit::quote($kind, $recipient, (int) $amount);
+    $ton = (float) ($quote['totalTon'] ?? 0);
+    $rate = telegramFragmentNobitexTonRate();
+    $percent = (float) telegramFragmentSetting('profit_percent_' . $kind, '10');
+    $fixed = (int) telegramFragmentSetting('profit_fixed_' . $kind, '0');
+    $price = telegramFragmentPriceFromQuote($ton, $rate, $percent, $fixed, telegramFragmentSetting('price_rounding', '1000'));
+    return $price + ['total_ton' => $ton, 'ton_rate' => $rate, 'quote' => $quote];
+}
+
+function telegramFragmentCustomStarsBounds()
+{
+    $min = max(50, (int) telegramFragmentSetting('stars_custom_min', '50'));
+    $max = min(1000000, max($min, (int) telegramFragmentSetting('stars_custom_max', '1000000')));
+    return [$min, $max];
+}
+
+function telegramFragmentSetUserPayload(array $payload)
+{
+    global $pdo, $from_id, $user;
+    $json = json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $pdo->prepare('UPDATE user SET Processing_value=? WHERE id=?')->execute([$json, (string) $from_id]);
+    $user['Processing_value'] = $json;
+}
+
+function telegramFragmentUserPayload()
+{
+    global $user;
+    $payload = json_decode((string) ($user['Processing_value'] ?? ''), true);
+    return is_array($payload) ? $payload : [];
+}
+
 function telegramFragmentProduct($id, $activeOnly = true)
 {
     global $pdo;
@@ -289,24 +443,20 @@ function telegramFragmentProducts($kind = null, $activeOnly = true)
 function telegramFragmentAddHomeButton(array &$rows)
 {
     if (telegramFragmentSetting('enabled', '0') !== '1') return;
-    array_unshift($rows, [[
-        'text' => '💎 ' . telegramFragmentSetting('menu_title', 'استارز و پریمیوم خودکار') . ' ⭐',
-        'callback_data' => 'tgp_fg_home',
-        'style' => 'primary',
-    ]]);
+    array_unshift($rows, [telegramFragmentButton(telegramFragmentSetting('menu_title', 'استارز و پریمیوم خودکار'), 'tgp_fg_home', 'primary', 'premium')]);
 }
 
 function telegramFragmentShowHome()
 {
     $rows = [
-        [['text' => '⭐ خرید استارز تلگرام', 'callback_data' => 'tgp_fg_kind_stars', 'style' => 'primary']],
-        [['text' => '💎 خرید تلگرام پریمیوم', 'callback_data' => 'tgp_fg_kind_premium', 'style' => 'success']],
-        [['text' => '📦 سفارش‌های من', 'callback_data' => 'tgp_fg_orders']],
-        [['text' => '🔙 بازگشت', 'callback_data' => 'tgp_home', 'style' => 'danger']],
+        [telegramFragmentButton('خرید استارز تلگرام', 'tgp_fg_kind_stars', 'primary', 'stars')],
+        [telegramFragmentButton('خرید تلگرام پریمیوم', 'tgp_fg_kind_premium', 'success', 'premium')],
+        [telegramFragmentButton('سفارش‌های من', 'tgp_fg_orders', 'primary', 'action')],
+        [telegramFragmentButton('بازگشت', 'tgp_home', 'danger', 'navigation')],
     ];
-    $text = "<b>استارز و پریمیوم خودکار</b>\n\n";
-    $text .= "<blockquote>تحویل خودکار پس از پرداخت\nپرداخت مستقیم از کیف پول ربات\nبدون نیاز به ورود به حساب کاربر</blockquote>\n\n";
-    $text .= 'سرویس موردنظر را انتخاب کنید.';
+    $text = "<b>خرید خودکار محصولات تلگرام</b>\n\n";
+    $text .= "<blockquote>تحویل کاملاً خودکار پس از پرداخت\nقیمت‌گذاری لحظه‌ای و شفاف\nبدون نیاز به ورود به حساب شما</blockquote>\n\n";
+    $text .= 'محصول موردنظر را انتخاب کنید.';
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
@@ -315,13 +465,13 @@ function telegramFragmentShowProducts($kind)
     $products = telegramFragmentProducts($kind, true);
     $rows = [];
     foreach ($products as $product) {
-        $rows[] = [[
-            'text' => ($kind === 'stars' ? '⭐ ' : '💎 ') . $product['title'] . ' • ' . telegramFragmentMoney($product['price']),
-            'callback_data' => 'tgp_fg_p_' . $product['id'],
-            'style' => $kind === 'stars' ? 'primary' : 'success',
-        ]];
+        $priceText = telegramFragmentSetting('live_pricing_enabled', '1') === '1' ? 'قیمت لحظه‌ای' : telegramFragmentMoney($product['price']);
+        $rows[] = [telegramFragmentButton($product['title'] . ' • ' . $priceText, 'tgp_fg_p_' . $product['id'], $kind === 'stars' ? 'primary' : 'success', $kind)];
     }
-    $rows[] = [['text' => '🔙 بازگشت', 'callback_data' => 'tgp_fg_home']];
+    if ($kind === 'stars' && telegramFragmentSetting('stars_custom_enabled', '1') === '1') {
+        $rows[] = [telegramFragmentButton('مقدار دلخواه استارز', 'tgp_fg_custom_stars', 'success', 'stars')];
+    }
+    $rows[] = [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')];
     $title = $kind === 'stars' ? '⭐ پکیج‌های استارز' : '💎 پلن‌های تلگرام پریمیوم';
     $text = '<b>' . $title . "</b>\n\nپلن موردنظر را انتخاب کنید 👇";
     if (!$products) $text .= "\n\nدر حال حاضر پلن فعالی ثبت نشده است.";
@@ -338,19 +488,20 @@ function telegramFragmentShowProduct($id)
     $kindText = $product['kind'] === 'stars'
         ? '<b>تعداد استارز:</b> ' . (int) $product['amount']
         : '<b>مدت اشتراک:</b> ' . (int) $product['amount'] . ' ماه';
-    $text = "<b>جزئیات پلن</b>\n\n<blockquote><b>محصول:</b> " . telegramFragmentEscape($product['title']) . "\n{$kindText}\n<b>مبلغ:</b> " . telegramFragmentMoney($product['price']) . '</blockquote>';
+    $priceText = telegramFragmentSetting('live_pricing_enabled', '1') === '1' ? 'پس از بررسی گیرنده محاسبه می‌شود' : telegramFragmentMoney($product['price']);
+    $text = "<b>جزئیات انتخاب شما</b>\n\n<blockquote><b>محصول:</b> " . telegramFragmentEscape($product['title']) . "\n{$kindText}\n<b>قیمت:</b> {$priceText}</blockquote>\n\nدر مرحله بعد نام کاربری گیرنده را وارد می‌کنید.";
     $rows = [
-        [['text' => '🛒 ادامه خرید', 'callback_data' => 'tgp_fg_buy_' . $product['id'], 'style' => 'success']],
-        [['text' => '🔙 بازگشت', 'callback_data' => 'tgp_fg_kind_' . $product['kind']]],
+        [telegramFragmentButton('ادامه خرید', 'tgp_fg_buy_' . $product['id'], 'success', 'action')],
+        [telegramFragmentButton('بازگشت', 'tgp_fg_kind_' . $product['kind'], 'danger', 'navigation')],
     ];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
-function telegramFragmentCreateDraft($productId, $recipient)
+function telegramFragmentCreateDraft($productId, $recipient, $customAmount = null)
 {
     global $pdo, $from_id;
-    $product = telegramFragmentProduct($productId, true);
-    if (!$product) {
+    $product = $productId === null ? null : telegramFragmentProduct($productId, true);
+    if ($productId !== null && !$product) {
         telegramProductsReply('پلن انتخاب‌شده دیگر در دسترس نیست.', null);
         return;
     }
@@ -359,11 +510,32 @@ function telegramFragmentCreateDraft($productId, $recipient)
         telegramProductsReply("⚠️ نام کاربری معتبر نیست. دوباره بفرستید.\nنمونه: <code>username</code>", null);
         return false;
     }
-    $idem = 'mirza-fg-' . substr(hash('sha256', $from_id . '|' . $productId . '|' . microtime(true) . '|' . random_int(1, PHP_INT_MAX)), 0, 42);
+    if ($product === null) {
+        [$min, $max] = telegramFragmentCustomStarsBounds();
+        $customAmount = (int) $customAmount;
+        if ($customAmount < $min || $customAmount > $max || telegramFragmentSetting('stars_custom_enabled', '1') !== '1') {
+            telegramProductsReply('مقدار استارز خارج از بازه مجاز است.', null);
+            return false;
+        }
+        $product = ['id' => null, 'title' => number_format($customAmount) . ' استارز دلخواه', 'kind' => 'stars', 'amount' => $customAmount, 'price' => 0];
+    }
+    $pricing = ['base' => (int) $product['price'], 'final' => (int) $product['price'], 'profit' => 0, 'total_ton' => null, 'ton_rate' => null];
+    $pricingMode = 'fixed';
+    if (telegramFragmentSetting('live_pricing_enabled', '1') === '1' || $productId === null) {
+        try {
+            $pricing = telegramFragmentLivePrice($product['kind'], $recipient, (int) $product['amount']);
+            $pricingMode = 'live';
+        } catch (Throwable $e) {
+            telegramFragmentLogFailure('live quote', $e);
+            telegramProductsReply(telegramFragmentFailureCard(telegramFragmentSafeReason($e), null, false, false), json_encode(['inline_keyboard' => [[telegramFragmentButton('تلاش دوباره', $productId === null ? 'tgp_fg_custom_stars' : 'tgp_fg_p_' . $productId, 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
+            return false;
+        }
+    }
+    $idem = 'mirza-fg-' . substr(hash('sha256', $from_id . '|' . ($productId ?? 'custom') . '|' . microtime(true) . '|' . random_int(1, PHP_INT_MAX)), 0, 42);
     $stmt = $pdo->prepare("INSERT INTO telegram_fragment_orders
-        (user_id,product_id,product_title,kind,recipient,product_amount,price,idempotency_key)
-        VALUES (?,?,?,?,?,?,?,?)");
-    $stmt->execute([(string) $from_id, $product['id'], $product['title'], $product['kind'], $recipient, $product['amount'], $product['price'], $idem]);
+        (user_id,product_id,product_title,kind,recipient,product_amount,price,base_price,quote_ton,ton_rate,profit_amount,pricing_mode,quoted_at,idempotency_key)
+        VALUES (?,?,?,?,?,?,?,?,?,?,?,?,NOW(),?)");
+    $stmt->execute([(string) $from_id, $product['id'], $product['title'], $product['kind'], $recipient, $product['amount'], $pricing['final'], $pricing['base'], $pricing['total_ton'], $pricing['ton_rate'], $pricing['profit'], $pricingMode, $idem]);
     telegramFragmentShowCheckout((int) $pdo->lastInsertId());
     return true;
 }
@@ -376,15 +548,17 @@ function telegramFragmentShowCheckout($orderId)
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$order) return;
     $detail = $order['kind'] === 'stars' ? (int) $order['product_amount'] . ' استارز' : (int) $order['product_amount'] . ' ماه پریمیوم';
-    $text = "<b>فاکتور خرید خودکار</b>\n\n<blockquote>";
+    $text = "<b>فاکتور نهایی خرید</b>\n\n<blockquote>";
     $text .= '<b>محصول:</b> ' . telegramFragmentEscape($order['product_title']) . "\n";
     $text .= '<b>پلن:</b> ' . $detail . "\n";
     $text .= '<b>گیرنده:</b> @' . telegramFragmentEscape($order['recipient']) . "\n";
-    $text .= '<b>مبلغ:</b> ' . telegramFragmentMoney($order['price']) . "\n<b>روش تحویل:</b> خودکار</blockquote>\n\n";
-    $text .= 'نام کاربری گیرنده را دقیق بررسی کنید؛ خرید تکمیل‌شده قابل برگشت نیست.';
+    $text .= '<b>مبلغ نهایی:</b> ' . telegramFragmentMoney($order['price']) . "\n";
+    if (($order['pricing_mode'] ?? '') === 'live') $text .= '<b>نوع قیمت:</b> لحظه‌ای و معتبر تا ' . (int) telegramFragmentSetting('quote_valid_minutes', '10') . " دقیقه\n";
+    $text .= '<b>روش تحویل:</b> خودکار</blockquote>\n\n';
+    $text .= 'گیرنده و مبلغ را بررسی کنید. خرید تکمیل‌شده قابل برگشت نیست.';
     $rows = [
-        [['text' => '✅ تأیید و پرداخت', 'callback_data' => 'tgp_fg_pay_' . $order['id'], 'style' => 'success']],
-        [['text' => '❌ انصراف', 'callback_data' => 'tgp_fg_home', 'style' => 'danger']],
+        [telegramFragmentButton('تأیید و پرداخت', 'tgp_fg_pay_' . $order['id'], 'success', 'action')],
+        [telegramFragmentButton('انصراف', 'tgp_fg_home', 'danger', 'navigation')],
     ];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
@@ -394,10 +568,6 @@ function telegramFragmentPayOrder($orderId)
     global $pdo, $from_id;
     if (telegramFragmentSetting('enabled', '0') !== '1') {
         telegramProductsReply('فروش خودکار در حال حاضر غیرفعال است.', null);
-        return;
-    }
-    if (telegramFragmentSetting('dry_run', '1') === '1') {
-        telegramProductsReply('بخش خودکار هنوز در حالت آزمایشی است و مبلغی کسر نشد.', null);
         return;
     }
     $paymentCommitted = false;
@@ -411,11 +581,30 @@ function telegramFragmentPayOrder($orderId)
             telegramProductsReply('این سفارش قبلاً پرداخت شده یا معتبر نیست.', null);
             return;
         }
-        $product = telegramFragmentProduct($order['product_id'], true);
-        if (!$product || (int) $product['price'] !== (int) $order['price'] || (int) $product['amount'] !== (int) $order['product_amount']) {
+        $product = $order['product_id'] === null ? null : telegramFragmentProduct($order['product_id'], true);
+        $livePricing = ($order['pricing_mode'] ?? '') === 'live';
+        if ($order['product_id'] !== null && (!$product || (int) $product['amount'] !== (int) $order['product_amount'] || (!$livePricing && (int) $product['price'] !== (int) $order['price']))) {
             $pdo->rollBack();
-            telegramProductsReply('قیمت یا وضعیت پلن تغییر کرده است؛ مبلغی کسر نشد.', null);
+            telegramProductsReply('اطلاعات این پلن تغییر کرده است؛ مبلغی کسر نشد. لطفاً سفارش تازه‌ای بسازید.', null);
             return;
+        }
+        if ($order['product_id'] === null) {
+            [$min, $max] = telegramFragmentCustomStarsBounds();
+            if ($order['kind'] !== 'stars' || (int) $order['product_amount'] < $min || (int) $order['product_amount'] > $max) {
+                $pdo->rollBack();
+                telegramProductsReply('مقدار سفارش دلخواه دیگر در بازه مجاز نیست؛ مبلغی کسر نشد.', null);
+                return;
+            }
+        }
+        if ($livePricing) {
+            $validMinutes = max(1, min(60, (int) telegramFragmentSetting('quote_valid_minutes', '10')));
+            $quotedAt = strtotime((string) ($order['quoted_at'] ?? $order['created_at']));
+            if (!$quotedAt || $quotedAt < time() - ($validMinutes * 60)) {
+                $pdo->rollBack();
+                $back = $order['product_id'] === null ? 'tgp_fg_custom_stars' : 'tgp_fg_p_' . $order['product_id'];
+                telegramProductsReply('اعتبار قیمت لحظه‌ای این فاکتور تمام شده است. برای دریافت قیمت تازه دوباره ادامه دهید.', json_encode(['inline_keyboard' => [[telegramFragmentButton('دریافت قیمت تازه', $back, 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
+                return;
+            }
         }
         $stmt = $pdo->prepare('SELECT Balance,agent,maxbuyagent FROM user WHERE id=? FOR UPDATE');
         $stmt->execute([(string) $from_id]);
@@ -424,7 +613,8 @@ function telegramFragmentPayOrder($orderId)
         $credit = ($wallet['agent'] ?? '') === 'n2' ? (int) ($wallet['maxbuyagent'] ?? 0) : 0;
         if ($balance < (int) $order['price'] && !($credit > 0 && $balance - (int) $order['price'] >= -$credit)) {
             $pdo->rollBack();
-            $rows = [[['text' => 'افزایش موجودی', 'callback_data' => 'account']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_p_' . $order['product_id']]]];
+            $back = $order['product_id'] === null ? 'tgp_fg_custom_stars' : 'tgp_fg_p_' . $order['product_id'];
+            $rows = [[telegramFragmentButton('افزایش موجودی', 'account', 'success', 'action')], [telegramFragmentButton('بازگشت', $back, 'danger', 'navigation')]];
             telegramProductsReply('موجودی کیف پول برای این خرید کافی نیست.', json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
             return;
         }
@@ -434,7 +624,7 @@ function telegramFragmentPayOrder($orderId)
         $paymentCommitted = true;
         if (function_exists('clearSelectCache')) clearSelectCache('user');
         $text = "<b>پرداخت با موفقیت ثبت شد</b>\n\n<blockquote><b>شماره سفارش:</b> <code>#{$order['id']}</code>\n<b>محصول:</b> " . telegramFragmentEscape($order['product_title']) . "\n<b>گیرنده:</b> @" . telegramFragmentEscape($order['recipient']) . "\n<b>مبلغ:</b> " . telegramFragmentMoney($order['price']) . "\n<b>وضعیت:</b> در صف خرید خودکار</blockquote>\n\nنتیجه سفارش پس از پردازش برای شما ارسال می‌شود.";
-        $rows = [[['text' => 'مشاهده وضعیت', 'callback_data' => 'tgp_fg_order_' . $order['id'], 'style' => 'primary']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']]];
+        $rows = [[telegramFragmentButton('مشاهده وضعیت', 'tgp_fg_order_' . $order['id'], 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')]];
         telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
         telegramProductsReport('sale', "<b>سفارش خودکار Fragment</b>\n\nسفارش: <code>#{$order['id']}</code>\nکاربر: <code>{$from_id}</code>\nگیرنده: @" . telegramFragmentEscape($order['recipient']) . "\nوضعیت: در صف پردازش");
     } catch (Throwable $e) {
@@ -443,10 +633,10 @@ function telegramFragmentPayOrder($orderId)
         $reason = telegramFragmentSafeReason($e);
         if ($paymentCommitted) {
             $text = "<b>پرداخت ثبت شده است</b>\n\n<blockquote><b>شماره پیگیری:</b> <code>#" . (int) $orderId . "</code>\n<b>وضعیت:</b> سفارش در صف پردازش خودکار قرار دارد.</blockquote>\n\nبرای این سفارش دوباره پرداخت نکنید.";
-            $rows = [[['text' => 'مشاهده وضعیت', 'callback_data' => 'tgp_fg_order_' . (int) $orderId, 'style' => 'primary']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']]];
+            $rows = [[telegramFragmentButton('مشاهده وضعیت', 'tgp_fg_order_' . (int) $orderId, 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')]];
             telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
         } else {
-            $rows = [[['text' => 'تلاش دوباره', 'callback_data' => 'tgp_fg_pay_' . (int) $orderId, 'style' => 'primary']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']]];
+            $rows = [[telegramFragmentButton('تلاش دوباره', 'tgp_fg_pay_' . (int) $orderId, 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')]];
             telegramProductsReply(telegramFragmentFailureCard($reason, $orderId, false, false), json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
         }
     }
@@ -485,7 +675,7 @@ function telegramFragmentShowOrder($id)
         $text .= "\n<b>دلیل:</b> " . telegramFragmentEscape(telegramFragmentSafeReason($order['last_error']));
     }
     if ($order['status'] === 'failed' && (int) $order['wallet_refunded'] === 1) $text .= "\n\nمبلغ کامل به کیف پول برگشت داده شد.";
-    $rows = [[['text' => 'تازه‌سازی', 'callback_data' => 'tgp_fg_order_' . $order['id']]], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_orders']]];
+    $rows = [[telegramFragmentButton('تازه‌سازی', 'tgp_fg_order_' . $order['id'], 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_orders', 'danger', 'navigation')]];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
@@ -497,9 +687,9 @@ function telegramFragmentShowOrders()
     $stmt->execute([(string) $from_id]);
     $rows = [];
     foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $order) {
-        $rows[] = [['text' => '#' . $order['id'] . ' | ' . $order['product_title'] . ' | ' . telegramFragmentStatusLabel($order['status']), 'callback_data' => 'tgp_fg_order_' . $order['id']]];
+        $rows[] = [telegramFragmentButton('#' . $order['id'] . ' | ' . $order['product_title'] . ' | ' . telegramFragmentStatusLabel($order['status']), 'tgp_fg_order_' . $order['id'], 'primary', 'action')];
     }
-    $rows[] = [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']];
+    $rows[] = [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')];
     $text = "<b>سفارش‌های خودکار من</b>" . (!$rows || count($rows) === 1 ? "\n\nهنوز سفارشی ثبت نشده است." : '');
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
@@ -527,6 +717,28 @@ function telegramFragmentHandleUserRequestInner()
         step('home', $from_id);
         return true;
     }
+    if ($datain === '' && $state === 'tgp_fg_custom_amount') {
+        [$min, $max] = telegramFragmentCustomStarsBounds();
+        $amount = telegramFragmentDigits(trim((string) $text));
+        if (!ctype_digit($amount) || (int) $amount < $min || (int) $amount > $max) {
+            telegramProductsReply('تعداد استارز باید عددی بین <code>' . number_format($min) . '</code> تا <code>' . number_format($max) . '</code> باشد.', json_encode(['inline_keyboard' => [[telegramFragmentButton('انصراف', 'tgp_fg_kind_stars', 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
+            return true;
+        }
+        telegramFragmentSetUserPayload(['amount' => (int) $amount]);
+        step('tgp_fg_custom_recipient', $from_id);
+        $user['step'] = 'tgp_fg_custom_recipient';
+        telegramProductsReply("<b>گیرنده استارز</b>\n\nنام کاربری تلگرام گیرنده را بدون @ ارسال کنید.\nنمونه: <code>username</code>", json_encode(['inline_keyboard' => [[telegramFragmentButton('انصراف', 'tgp_fg_kind_stars', 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
+        return true;
+    }
+    if ($datain === '' && $state === 'tgp_fg_custom_recipient') {
+        $payload = telegramFragmentUserPayload();
+        if (telegramFragmentCreateDraft(null, $text, (int) ($payload['amount'] ?? 0)) !== false) {
+            step('home', $from_id);
+            telegramFragmentSetUserPayload([]);
+            $user['step'] = 'home';
+        }
+        return true;
+    }
     if ($datain === '' && preg_match('/^tgp_fg_recipient_(\d+)$/', $state, $match)) {
         // نام کاربری نامعتبر: کاربر در همان مرحله می‌ماند تا دوباره بفرستد
         if (telegramFragmentCreateDraft($match[1], $text) !== false) {
@@ -542,13 +754,23 @@ function telegramFragmentHandleUserRequestInner()
     if ($datain === 'tgp_fg_home') { telegramFragmentShowHome(); return true; }
     if ($datain === 'tgp_fg_orders') { telegramFragmentShowOrders(); return true; }
     if (preg_match('/^tgp_fg_kind_(stars|premium)$/', $datain, $m)) { telegramFragmentShowProducts($m[1]); return true; }
+    if ($datain === 'tgp_fg_custom_stars') {
+        if (telegramFragmentSetting('stars_custom_enabled', '1') !== '1') { telegramFragmentShowProducts('stars'); return true; }
+        [$min, $max] = telegramFragmentCustomStarsBounds();
+        step('tgp_fg_custom_amount', $from_id);
+        $user['step'] = 'tgp_fg_custom_amount';
+        telegramFragmentSetUserPayload([]);
+        $message = "<b>مقدار دلخواه استارز</b>\n\nتعداد موردنظر را فقط به‌صورت عدد ارسال کنید.\n\n<blockquote><b>حداقل:</b> " . number_format($min) . " استارز\n<b>حداکثر:</b> " . number_format($max) . " استارز\n<b>قیمت:</b> لحظه‌ای پس از بررسی گیرنده</blockquote>";
+        telegramProductsReply($message, json_encode(['inline_keyboard' => [[telegramFragmentButton('انصراف', 'tgp_fg_kind_stars', 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
+        return true;
+    }
     if (preg_match('/^tgp_fg_p_(\d+)$/', $datain, $m)) { telegramFragmentShowProduct($m[1]); return true; }
     if (preg_match('/^tgp_fg_buy_(\d+)$/', $datain, $m)) {
         $product = telegramFragmentProduct($m[1], true);
         if (!$product) { telegramProductsReply('پلن در دسترس نیست.', null); return true; }
         step('tgp_fg_recipient_' . $product['id'], $from_id);
         $user['step'] = 'tgp_fg_recipient_' . $product['id'];
-        $rows = [[['text' => '❌ انصراف', 'callback_data' => 'tgp_fg_p_' . $product['id'], 'style' => 'danger']]];
+        $rows = [[telegramFragmentButton('انصراف', 'tgp_fg_p_' . $product['id'], 'danger', 'navigation')]];
         telegramProductsReply("👤 <b>نام کاربری گیرنده</b>\n\nنام کاربری تلگرام را بدون @ ارسال کنید.\nنمونه: <code>username</code>", json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
         return true;
     }
@@ -587,7 +809,7 @@ function telegramFragmentNotifyOrder(array $order, $status, $message = '')
     $text = $status === 'completed'
         ? "<b>سفارش با موفقیت تکمیل شد</b>\n\n<blockquote><b>شماره سفارش:</b> <code>#{$order['id']}</code>\n<b>محصول:</b> " . telegramFragmentEscape($order['product_title']) . "\n<b>گیرنده:</b> @" . telegramFragmentEscape($order['recipient']) . "\n<b>وضعیت:</b> تحویل‌شده</blockquote>"
         : telegramFragmentFailureCard($reason, $order['id'], (int) ($order['wallet_refunded'] ?? 0) === 1, $status === 'review');
-    sendmessage($order['user_id'], $text, json_encode(['inline_keyboard' => [[['text' => 'مشاهده سفارش', 'callback_data' => 'tgp_fg_order_' . $order['id']]]]], JSON_UNESCAPED_UNICODE), 'HTML');
+    sendmessage($order['user_id'], $text, json_encode(['inline_keyboard' => [[telegramFragmentButton('مشاهده سفارش', 'tgp_fg_order_' . $order['id'], 'primary', 'action')]]], JSON_UNESCAPED_UNICODE), 'HTML');
     $pdo->prepare('UPDATE telegram_fragment_orders SET notified_status=? WHERE id=?')->execute([$status, $order['id']]);
     telegramProductsReport($status === 'completed' ? 'sale' : 'error', "<b>گزارش Fragment</b>\n\nسفارش: <code>#{$order['id']}</code>\nکاربر: <code>" . telegramFragmentEscape($order['user_id']) . "</code>\nگیرنده: @" . telegramFragmentEscape($order['recipient']) . "\nوضعیت: " . telegramFragmentStatusLabel($status) . ($status === 'completed' ? '' : "\nدلیل: " . telegramFragmentEscape($reason)));
 }
@@ -618,7 +840,7 @@ function telegramFragmentProcessPendingOrders($limit = 3)
 {
     global $pdo;
     telegramFragmentEnsureSchema();
-    if (telegramFragmentSetting('enabled', '0') !== '1' || telegramFragmentSetting('dry_run', '1') === '1') return 0;
+    if (telegramFragmentSetting('enabled', '0') !== '1') return 0;
     $lock = (int) $pdo->query("SELECT GET_LOCK('mirza_fragment_worker',0)")->fetchColumn();
     if ($lock !== 1) return 0;
     $processed = 0;
@@ -736,7 +958,6 @@ function telegramFragmentAdminHome()
     telegramFragmentEnsureSchema();
     $status = telegramFragmentStatusSnapshot(false);
     $enabled = telegramFragmentSetting('enabled', '0') === '1';
-    $dryRun = telegramFragmentSetting('dry_run', '1') === '1';
     $showSender = telegramFragmentSetting('show_sender', '0') === '1';
     $low = (float) telegramFragmentSetting('low_balance_ton', '2');
     $plans = (int) $pdo->query('SELECT COUNT(*) FROM telegram_fragment_products')->fetchColumn();
@@ -745,7 +966,7 @@ function telegramFragmentAdminHome()
     $text = "<b>اتصال Fragment</b>\n\n";
     $text .= "پکیج‌های پریمیوم و استارز پس از پرداخت کاربر، به‌صورت خودکار از Fragment و با کیف پول TON خریداری می‌شوند.\n\n<blockquote>";
     $text .= 'فروش خودکار: ' . ($enabled ? '✅ روشن' : '❌ خاموش') . "\n";
-    $text .= 'حالت پردازش: ' . ($dryRun ? '🧪 آزمایشی' : '✅ واقعی') . "\n";
+    $text .= "پردازش سفارش‌ها: ✅ واقعی\n";
     $text .= 'سرویس امضا: ' . ($status['signer'] ? '✅ متصل' : '❌ قطع') . "\n";
     $text .= 'ورود در Fragment: ' . ($status['session'] ? '✅ تأیید شده' : '⚪ نیازمند بررسی') . "\n";
     $text .= 'کیف پول: ' . ($status['wallet'] ? '<code>' . telegramFragmentMasked($status['address']) . '</code>' : '❌ ثبت نشده') . "\n";
@@ -773,15 +994,13 @@ function telegramFragmentAdminHome()
             ['text' => 'نام فرستنده: ' . ($showSender ? 'روشن' : 'خاموش'), 'callback_data' => 'vsa_fg_sender'],
             ['text' => 'هشدار موجودی', 'callback_data' => 'vsa_fg_low'],
         ],
-        [
-            ['text' => 'حالت: ' . ($dryRun ? 'آزمایشی' : 'واقعی'), 'callback_data' => 'vsa_fg_dryrun'],
-            ['text' => 'سقف‌های تراکنش', 'callback_data' => 'vsa_fg_limits'],
-        ],
+        [['text' => 'سقف‌های تراکنش', 'callback_data' => 'vsa_fg_limits']],
         [
             ['text' => 'تمدید نشست', 'callback_data' => 'vsa_fg_refresh'],
             ['text' => 'بررسی اتصال', 'callback_data' => 'vsa_fg_test'],
         ],
         [['text' => 'مدیریت پکیج‌ها', 'callback_data' => 'vsa_fg_products', 'style' => 'primary']],
+        [['text' => 'قیمت‌گذاری و مقدار دلخواه', 'callback_data' => 'vsa_fg_pricing', 'style' => 'success']],
         [['text' => 'سفارش‌های Fragment', 'callback_data' => 'vsa_fg_orders']],
         [['text' => 'راهنما', 'callback_data' => 'vsa_fg_help']],
         [['text' => 'بازگشت', 'callback_data' => 'vsa_home', 'style' => 'danger']],
@@ -826,9 +1045,11 @@ function telegramFragmentAdminCheck($login = false)
 function telegramFragmentAdminProducts()
 {
     $products = telegramFragmentProducts(null, false);
+    $live = telegramFragmentSetting('live_pricing_enabled', '1') === '1';
     $rows = [];
     foreach ($products as $product) {
-        $rows[] = [['text' => ($product['is_active'] ? '✅ ' : '❌ ') . $product['title'] . ' | ' . telegramFragmentMoney($product['price']), 'callback_data' => 'vsa_fg_p_' . $product['id']]];
+        $price = $live ? 'لحظه‌ای' : telegramFragmentMoney($product['price']);
+        $rows[] = [['text' => ($product['is_active'] ? '✅ ' : '❌ ') . $product['title'] . ' | ' . $price, 'callback_data' => 'vsa_fg_p_' . $product['id']]];
     }
     $rows[] = [
         ['text' => 'افزودن استارز', 'callback_data' => 'vsa_fg_add_stars', 'style' => 'primary'],
@@ -838,6 +1059,57 @@ function telegramFragmentAdminProducts()
     virtualServicesAdminReply("<b>مدیریت پکیج‌های Fragment</b>\n\nبرای ویرایش یا تغییر وضعیت، روی پکیج بزنید.", $rows);
 }
 
+function telegramFragmentAdminPricing($refreshRate = false)
+{
+    $enabled = telegramFragmentSetting('live_pricing_enabled', '1') === '1';
+    $custom = telegramFragmentSetting('stars_custom_enabled', '1') === '1';
+    [$min, $max] = telegramFragmentCustomStarsBounds();
+    $starsPercent = (float) telegramFragmentSetting('profit_percent_stars', '10');
+    $premiumPercent = (float) telegramFragmentSetting('profit_percent_premium', '10');
+    $starsFixed = (int) telegramFragmentSetting('profit_fixed_stars', '0');
+    $premiumFixed = (int) telegramFragmentSetting('profit_fixed_premium', '0');
+    $rounding = (int) telegramFragmentSetting('price_rounding', '1000');
+    $rate = (float) telegramFragmentSetting('nobitex_ton_toman', '0');
+    $rateAt = telegramFragmentSetting('nobitex_ton_rate_at', 'هنوز دریافت نشده');
+    $rateError = '';
+    if ($refreshRate) {
+        try {
+            $rate = telegramFragmentNobitexTonRate(true);
+            $rateAt = telegramFragmentSetting('nobitex_ton_rate_at', date('Y-m-d H:i:s'));
+        } catch (Throwable $e) {
+            telegramFragmentLogFailure('admin rate refresh', $e);
+            $rateError = telegramFragmentSafeReason($e);
+        }
+    }
+    $text = "<b>قیمت‌گذاری خودکار Fragment</b>\n\n<blockquote>";
+    $text .= 'قیمت لحظه‌ای: ' . ($enabled ? 'فعال' : 'غیرفعال') . "\n";
+    $text .= 'نرخ TON: ' . ($rate > 0 ? telegramFragmentMoney((int) round($rate)) : 'دریافت نشده') . "\n";
+    $text .= 'آخرین دریافت نرخ: ' . telegramFragmentEscape($rateAt) . "\n";
+    $text .= 'سود استارز: ' . $starsPercent . '% + ' . telegramFragmentMoney($starsFixed) . "\n";
+    $text .= 'سود پریمیوم: ' . $premiumPercent . '% + ' . telegramFragmentMoney($premiumFixed) . "\n";
+    $text .= 'گرد کردن مبلغ: ' . telegramFragmentMoney($rounding) . "\n";
+    $text .= 'استارز دلخواه: ' . ($custom ? 'فعال' : 'غیرفعال') . "\n";
+    $text .= 'بازه دلخواه: ' . number_format($min) . ' تا ' . number_format($max) . ' استارز</blockquote>';
+    if ($rateError !== '') $text .= "\n\n<b>نتیجه دریافت نرخ:</b> " . telegramFragmentEscape($rateError);
+    $rows = [
+        [['text' => 'قیمت لحظه‌ای: ' . ($enabled ? 'فعال' : 'غیرفعال'), 'callback_data' => 'vsa_fg_livepricing', 'style' => $enabled ? 'success' : 'danger']],
+        [
+            ['text' => 'سود استارز', 'callback_data' => 'vsa_fg_profit_stars'],
+            ['text' => 'سود پریمیوم', 'callback_data' => 'vsa_fg_profit_premium'],
+        ],
+        [
+            ['text' => 'بازه استارز دلخواه', 'callback_data' => 'vsa_fg_custom_limits'],
+            ['text' => 'مقدار دلخواه: ' . ($custom ? 'روشن' : 'خاموش'), 'callback_data' => 'vsa_fg_custom_toggle'],
+        ],
+        [
+            ['text' => 'گرد کردن قیمت', 'callback_data' => 'vsa_fg_rounding'],
+            ['text' => 'دریافت نرخ TON', 'callback_data' => 'vsa_fg_rate_test'],
+        ],
+        [['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home', 'style' => 'danger']],
+    ];
+    virtualServicesAdminReply($text, $rows);
+}
+
 function telegramFragmentAdminProduct($id)
 {
     $product = telegramFragmentProduct($id, false);
@@ -845,7 +1117,8 @@ function telegramFragmentAdminProduct($id)
     $text = '<b>' . telegramFragmentEscape($product['title']) . "</b>\n\n";
     $text .= 'نوع: ' . ($product['kind'] === 'stars' ? 'استارز' : 'پریمیوم') . "\n";
     $text .= 'مقدار: <code>' . (int) $product['amount'] . "</code>\n";
-    $text .= 'قیمت: ' . telegramFragmentMoney($product['price']) . "\n";
+    $text .= 'قیمت دستی: ' . telegramFragmentMoney($product['price']) . "\n";
+    if (telegramFragmentSetting('live_pricing_enabled', '1') === '1') $text .= "قیمت فروش: لحظه‌ای + سود تنظیم‌شده\n";
     $text .= 'وضعیت: ' . ($product['is_active'] ? 'فعال' : 'غیرفعال');
     $rows = [
         [
@@ -987,6 +1260,31 @@ function telegramFragmentAdminHandleRequest()
                 telegramFragmentSetSetting('daily_limit_ton', (string) (float) $parts[1]);
                 virtualServicesAdminClearState(); telegramFragmentAdminHome(); return true;
             }
+            if (preg_match('/^vsa_fg_profit_(stars|premium)_input$/', $state, $m)) {
+                $parts = array_map('trim', explode('|', telegramFragmentDigits((string) $text)));
+                if (count($parts) !== 2 || !is_numeric($parts[0]) || !ctype_digit($parts[1])) throw new InvalidArgumentException('سود را با فرمت درصد | مبلغ ثابت ارسال کنید.');
+                $percent = (float) $parts[0];
+                $fixed = (int) $parts[1];
+                if ($percent < 0 || $percent > 10000 || $fixed < 0 || $fixed > 1000000000) throw new InvalidArgumentException('مقدار سود خارج از بازه مجاز است.');
+                telegramFragmentSetSetting('profit_percent_' . $m[1], (string) $percent);
+                telegramFragmentSetSetting('profit_fixed_' . $m[1], (string) $fixed);
+                virtualServicesAdminClearState(); telegramFragmentAdminPricing(); return true;
+            }
+            if ($state === 'vsa_fg_custom_limits_input') {
+                $parts = array_map('trim', explode('|', telegramFragmentDigits((string) $text)));
+                if (count($parts) !== 2 || !ctype_digit($parts[0]) || !ctype_digit($parts[1])) throw new InvalidArgumentException('حداقل و حداکثر را با | جدا کنید.');
+                $min = (int) $parts[0]; $max = (int) $parts[1];
+                if ($min < 50 || $max > 1000000 || $min > $max) throw new InvalidArgumentException('بازه باید بین ۵۰ تا ۱۰۰۰۰۰۰ استارز و حداقل کمتر از حداکثر باشد.');
+                telegramFragmentSetSetting('stars_custom_min', (string) $min);
+                telegramFragmentSetSetting('stars_custom_max', (string) $max);
+                virtualServicesAdminClearState(); telegramFragmentAdminPricing(); return true;
+            }
+            if ($state === 'vsa_fg_rounding_input') {
+                $value = telegramFragmentDigits(trim((string) $text));
+                if (!ctype_digit($value) || (int) $value < 1 || (int) $value > 1000000) throw new InvalidArgumentException('مقدار گرد کردن باید بین ۱ تا ۱۰۰۰۰۰۰ تومان باشد.');
+                telegramFragmentSetSetting('price_rounding', (string) (int) $value);
+                virtualServicesAdminClearState(); telegramFragmentAdminPricing(); return true;
+            }
         } catch (Throwable $e) {
             telegramFragmentLogFailure('admin save', $e);
             $reason = $e instanceof InvalidArgumentException ? $e->getMessage() : telegramFragmentSafeReason($e);
@@ -1007,11 +1305,7 @@ function telegramFragmentAdminHandleRequest()
         }
         telegramFragmentSetSetting('enabled', $enable ? '1' : '0'); telegramFragmentAdminHome(); return true;
     }
-    if ($datain === 'vsa_fg_dryrun') {
-        $real = telegramFragmentSetting('dry_run', '1') === '1';
-        telegramFragmentSetSetting('dry_run', $real ? '0' : '1');
-        telegramFragmentAdminHome(); return true;
-    }
+    if ($datain === 'vsa_fg_dryrun') { telegramFragmentAdminHome(); return true; }
     if ($datain === 'vsa_fg_wallet') {
         virtualServicesAdminSetState('vsa_fg_wallet_input');
         virtualServicesAdminReply("<b>ثبت کیف پول TON</b>\n\nعبارت بازیابی ۲۴ کلمه‌ای را در یک پیام بفرستید.\n\nپیام فوراً حذف و کلید فقط به‌صورت رمزنگاری‌شده در سرویس محلی امضا نگهداری می‌شود.", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_home', 'style' => 'danger']]]);
@@ -1046,15 +1340,35 @@ function telegramFragmentAdminHandleRequest()
     if ($datain === 'vsa_fg_test') { telegramFragmentAdminCheck(false); return true; }
     if ($datain === 'vsa_fg_refresh') { telegramFragmentAdminCheck(true); return true; }
     if ($datain === 'vsa_fg_products') { telegramFragmentAdminProducts(); return true; }
+    if ($datain === 'vsa_fg_pricing') { telegramFragmentAdminPricing(); return true; }
+    if ($datain === 'vsa_fg_livepricing') { telegramFragmentSetSetting('live_pricing_enabled', telegramFragmentSetting('live_pricing_enabled', '1') === '1' ? '0' : '1'); telegramFragmentAdminPricing(); return true; }
+    if ($datain === 'vsa_fg_custom_toggle') { telegramFragmentSetSetting('stars_custom_enabled', telegramFragmentSetting('stars_custom_enabled', '1') === '1' ? '0' : '1'); telegramFragmentAdminPricing(); return true; }
+    if ($datain === 'vsa_fg_profit_stars' || $datain === 'vsa_fg_profit_premium') {
+        $kind = substr($datain, strlen('vsa_fg_profit_'));
+        virtualServicesAdminSetState('vsa_fg_profit_' . $kind . '_input');
+        virtualServicesAdminReply("درصد سود و مبلغ ثابت را با | جدا کنید.\n\nنمونه: <code>12.5 | 5000</code>\nبرای حذف مبلغ ثابت، صفر بفرستید.", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_pricing', 'style' => 'danger']]]);
+        return true;
+    }
+    if ($datain === 'vsa_fg_custom_limits') {
+        virtualServicesAdminSetState('vsa_fg_custom_limits_input');
+        virtualServicesAdminReply("حداقل و حداکثر استارز دلخواه را با | جدا کنید.\n\nنمونه: <code>50 | 100000</code>", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_pricing', 'style' => 'danger']]]);
+        return true;
+    }
+    if ($datain === 'vsa_fg_rounding') {
+        virtualServicesAdminSetState('vsa_fg_rounding_input');
+        virtualServicesAdminReply("قیمت نهایی به مضرب این مبلغ رو به بالا گرد می‌شود.\n\nنمونه: <code>1000</code>", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_pricing', 'style' => 'danger']]]);
+        return true;
+    }
+    if ($datain === 'vsa_fg_rate_test') { telegramFragmentAdminPricing(true); return true; }
     if ($datain === 'vsa_fg_orders') { telegramFragmentAdminOrders(); return true; }
     if ($datain === 'vsa_fg_help') {
-        $text = "<b>راهنمای Fragment</b>\n\n۱. کیف پول TON را ثبت کنید.\n۲. نسخه درست کیف پول را انتخاب کنید.\n۳. با دکمه ورود Fragment، نشست را فعال کنید.\n۴. کلید TON RPC و سقف‌ها را تنظیم کنید.\n۵. ابتدا در حالت آزمایشی اتصال را بررسی کرده، سپس حالت واقعی و فروش را روشن کنید.\n\nسفارش‌ها با کلید یکتا اجرا می‌شوند؛ تکرار worker باعث پرداخت دوباره نمی‌شود.";
+        $text = "<b>راهنمای Fragment</b>\n\n۱. کیف پول TON را ثبت کنید.\n۲. نسخه درست کیف پول را انتخاب کنید.\n۳. با دکمه ورود Fragment، نشست را فعال کنید.\n۴. کلید TON RPC و سقف‌ها را تنظیم کنید.\n۵. نرخ لحظه‌ای و سود فروش را بررسی کنید، سپس فروش را روشن کنید.\n\nتمام سفارش‌ها واقعی هستند و با کلید یکتا اجرا می‌شوند؛ تکرار worker باعث پرداخت دوباره نمی‌شود.";
         virtualServicesAdminReply($text, [[['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']]]); return true;
     }
     if (preg_match('/^vsa_fg_add_(stars|premium)$/', $datain, $m)) {
         virtualServicesAdminSetState('vsa_fg_add_' . $m[1]);
         $sample = $m[1] === 'stars' ? 'پکیج ۵۰ استارزی | 50 | 150000' : 'پریمیوم ۳ ماهه | 3 | 650000';
-        virtualServicesAdminReply("عنوان، مقدار و قیمت تومانی را در یک پیام بفرستید:\n\n<code>{$sample}</code>", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_products']]]); return true;
+        virtualServicesAdminReply("عنوان، مقدار و قیمت دستی را در یک پیام بفرستید:\n\n<code>{$sample}</code>\n\nدر صورت فعال بودن قیمت لحظه‌ای، این مبلغ فقط هنگام خاموش بودن قیمت‌گذاری خودکار استفاده می‌شود.", [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_products']]]); return true;
     }
     if (preg_match('/^vsa_fg_p_(\d+)$/', $datain, $m)) { telegramFragmentAdminProduct($m[1]); return true; }
     if (preg_match('/^vsa_fg_togglep_(\d+)$/', $datain, $m)) { $pdo->prepare('UPDATE telegram_fragment_products SET is_active=1-is_active WHERE id=?')->execute([(int) $m[1]]); telegramFragmentAdminProduct($m[1]); return true; }

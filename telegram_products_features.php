@@ -101,13 +101,13 @@ function telegramProductsAskFormField($productId, $index, $fields = null)
     if ($field['field_type'] === 'select') {
         $options = json_decode((string) $field['options_json'], true) ?: [];
         foreach ($options as $optionIndex => $option) {
-            $rows[] = [['text' => (string) $option, 'callback_data' => "tgp_formopt_{$productId}_{$field['id']}_{$optionIndex}"]];
+            $rows[] = [telegramProductsActionButton((string) $option, "tgp_formopt_{$productId}_{$field['id']}_{$optionIndex}", 'primary', 'action')];
         }
     }
     if ((int) $field['is_required'] === 0) {
-        $rows[] = [['text' => 'رد کردن این فیلد', 'callback_data' => "tgp_formskip_{$productId}_{$field['id']}"]];
+        $rows[] = [telegramProductsActionButton('رد کردن این فیلد', "tgp_formskip_{$productId}_{$field['id']}", 'primary', 'navigation')];
     }
-    $rows[] = [['text' => 'انصراف', 'callback_data' => 'tgp_view_' . $productId, 'style' => 'danger']];
+    $rows[] = [telegramProductsActionButton('انصراف', 'tgp_view_' . $productId, 'danger', 'navigation')];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE), false);
 }
 
@@ -311,18 +311,16 @@ function telegramProductsCheckout($orderId)
     $text .= '<b>موجودی کیف پول:</b> ' . telegramProductsMoney($balance) . '</blockquote>';
     $text .= "\n\n" . telegramProductsSafeCustomText(telegramProductsSetting('checkout_text', 'اطلاعات سفارش را بررسی و پرداخت را تأیید کنید.'));
     if (!empty($order['customer_input'])) $text .= "\n\n<b>اطلاعات سفارش:</b>\n<blockquote>" . telegramProductsFormatCustomerInput($order['customer_input']) . '</blockquote>';
-    $rows = [
-        [['text' => empty($order['discount_code']) ? 'ثبت کد تخفیف' : 'تغییر کد تخفیف', 'callback_data' => 'tgp_discount_' . $order['id'], 'style' => 'primary']],
-    ];
-    if (!empty($order['discount_code'])) $rows[] = [['text' => 'حذف کد تخفیف', 'callback_data' => 'tgp_discountclear_' . $order['id']]];
+    $rows = [[telegramProductsActionButton(empty($order['discount_code']) ? 'ثبت کد تخفیف' : 'تغییر کد تخفیف', 'tgp_discount_' . $order['id'], 'primary', 'action')]];
+    if (!empty($order['discount_code'])) $rows[] = [telegramProductsActionButton('حذف کد تخفیف', 'tgp_discountclear_' . $order['id'], 'danger', 'navigation')];
     if (telegramProductsSetting('loyalty_enabled', '1') === '1') {
         $loyalty = telegramProductsLoyalty($from_id);
-        $rows[] = [['text' => (int) $order['points_used'] > 0 ? 'لغو مصرف امتیاز' : 'استفاده از امتیاز (' . (int) $loyalty['points'] . ')', 'callback_data' => 'tgp_points_' . $order['id']]];
+        $rows[] = [telegramProductsActionButton((int) $order['points_used'] > 0 ? 'لغو مصرف امتیاز' : 'استفاده از امتیاز (' . (int) $loyalty['points'] . ')', 'tgp_points_' . $order['id'], 'primary', 'action')];
     }
     $canPay = $balance >= (int) $order['price'] || ($creditLimit > 0 && ($balance - (int) $order['price']) >= -$creditLimit);
-    if ($canPay) $rows[] = [['text' => 'پرداخت نهایی', 'callback_data' => 'tgp_pay_' . $order['id'], 'style' => 'success']];
-    else $rows[] = [['text' => 'افزایش موجودی', 'callback_data' => 'account']];
-    $rows[] = [['text' => 'انصراف', 'callback_data' => 'tgp_view_' . $order['product_id'], 'style' => 'danger']];
+    if ($canPay) $rows[] = [telegramProductsActionButton('پرداخت نهایی', 'tgp_pay_' . $order['id'], 'success', 'success')];
+    else $rows[] = [telegramProductsActionButton('افزایش موجودی', 'account', 'success', 'success')];
+    $rows[] = [telegramProductsActionButton('انصراف', 'tgp_view_' . $order['product_id'], 'danger', 'navigation')];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
@@ -418,7 +416,7 @@ function telegramProductsFeatureUserHandle()
     if (preg_match('/^tgp_discount_(\d+)$/', $datain, $m)) {
         step('tgp_discount_input_' . $m[1], $from_id);
         update('user', 'Processing_value', (string) $m[1], 'id', $from_id);
-        telegramProductsReply('کد تخفیف را ارسال کنید.', json_encode(['inline_keyboard' => [[['text' => 'انصراف', 'callback_data' => 'tgp_checkout_' . $m[1]]]]], JSON_UNESCAPED_UNICODE));
+        telegramProductsReply('کد تخفیف را ارسال کنید.', json_encode(['inline_keyboard' => [[telegramProductsActionButton('انصراف', 'tgp_checkout_' . $m[1], 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
         return true;
     }
     if (preg_match('/^tgp_discountclear_(\d+)$/', $datain, $m)) {
@@ -453,7 +451,7 @@ function telegramProductsFeatureUserHandle()
     }
     if (preg_match('/^tgp_warranty_(\d+)$/', $datain, $m)) {
         step('tgp_warranty_input_' . $m[1], $from_id);
-        telegramProductsReply('مشکل سفارش را کامل توضیح دهید.', json_encode(['inline_keyboard' => [[['text' => 'انصراف', 'callback_data' => 'tgp_order_' . $m[1]]]]], JSON_UNESCAPED_UNICODE));
+        telegramProductsReply('مشکل سفارش را کامل توضیح دهید.', json_encode(['inline_keyboard' => [[telegramProductsActionButton('انصراف', 'tgp_order_' . $m[1], 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
         return true;
     }
     if (preg_match('/^tgp_warranty_input_(\d+)$/', $step, $m) && $datain === '') {
