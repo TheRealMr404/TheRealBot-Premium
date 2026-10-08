@@ -35,9 +35,13 @@ if (isset($update['chat_member'])) {
         return;
     }
 }
-$isCardReceiptChannelCallback = cardReceiptReviewCallbackChat($update, $datain);
-if (!in_array($Chat_type, ["private", "supergroup"]) && !$isCardReceiptChannelCallback)
+$isCardReceiptReviewCallback = cardReceiptReviewCallbackChat($update, $datain);
+if (!in_array($Chat_type, ["private", "supergroup"]) && !$isCardReceiptReviewCallback)
     return;
+if ($Chat_type === 'supergroup' && preg_match('/^(Confirm_pay|reject_pay|addbalamceuser|blockuserfake)_\w+$/', (string) $datain) && !$isCardReceiptReviewCallback) {
+    telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'این تاپیک برای بررسی رسید مجاز نیست.', 'show_alert' => true]);
+    return;
+}
 if (isset($chat_member))
     return;
 $first_name = sanitizeUserName($first_name);
@@ -124,7 +128,7 @@ $admin_ids = select("admin", "id_admin", null, null, "FETCH_COLUMN");
 if (!is_array($admin_ids)) {
     $admin_ids = [];
 }
-if ($isCardReceiptChannelCallback) {
+if ($isCardReceiptReviewCallback) {
     if (!in_array((string) $from_id, array_map('strval', $admin_ids), true)) {
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'دسترسی بررسی رسید ندارید.', 'show_alert' => true]);
         return;
@@ -8600,8 +8604,8 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
     update("Payment_report", "payment_Status", "waiting", "id_order", $PaymentReport['id_order']);
     $dateacc = date('Y/m/d H:i:s');
     update("Payment_report", "at_updated", $dateacc, "id_order", $PaymentReport['id_order']);
-    $sentToReviewChannel = cardReceiptSendToReviewChannel($photoid, $caption, $textsendrasid, $Confirm_pay);
-    if (!$sentToReviewChannel) {
+    $sentToReviewDestination = cardReceiptSendToReviewDestination($photoid, $caption, $textsendrasid, $Confirm_pay);
+    if (!$sentToReviewDestination) {
         foreach ($admin_ids as $id_admin) {
             $adminrulecheck = select("admin", "*", "id_admin", $id_admin, "select");
             if ($adminrulecheck['rule'] == "support")

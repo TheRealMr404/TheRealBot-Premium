@@ -537,21 +537,45 @@ function cardReceiptReviewChatId()
     return preg_match('/^-100[0-9]{5,17}$/', $id) ? $id : '';
 }
 
-function cardReceiptReviewEnabled()
+function cardReceiptReviewMode()
 {
-    return getPaySettingValue('card_receipt_review_mode', 'admins') === 'channel'
-        && cardReceiptReviewChatId() !== '';
+    $mode = getPaySettingValue('card_receipt_review_mode', 'admins');
+    return in_array($mode, ['admins', 'channel', 'group'], true) ? $mode : 'admins';
+}
+
+function cardReceiptReviewGroupTarget()
+{
+    $setting = select('setting', 'Channel_Report');
+    $mainGroup = trim((string) ($setting['Channel_Report'] ?? ''));
+    $savedGroup = trim((string) getPaySettingValue('card_receipt_review_group_id', ''));
+    $topicId = (int) getPaySettingValue('card_receipt_review_topic_id', '0');
+    if (!preg_match('/^-100[0-9]{5,17}$/', $mainGroup) || $mainGroup !== $savedGroup || $topicId <= 0) return null;
+    return ['chat_id' => $mainGroup, 'message_thread_id' => $topicId];
+}
+
+function cardReceiptReviewTarget()
+{
+    $mode = cardReceiptReviewMode();
+    if ($mode === 'channel' && cardReceiptReviewChatId() !== '') return ['chat_id' => cardReceiptReviewChatId()];
+    if ($mode === 'group') return cardReceiptReviewGroupTarget();
+    return null;
 }
 
 function cardReceiptReviewCallbackChat($update, $callbackData)
 {
     $chat = $update['callback_query']['message']['chat'] ?? [];
-    return ($chat['type'] ?? '') === 'channel'
-        && (string) ($chat['id'] ?? '') === cardReceiptReviewChatId()
-        && preg_match('/^(Confirm_pay|reject_pay|addbalamceuser|blockuserfake)_\w+$/', (string) $callbackData) === 1;
+    if (preg_match('/^(Confirm_pay|reject_pay|addbalamceuser|blockuserfake)_\w+$/', (string) $callbackData) !== 1) return false;
+    if (($chat['type'] ?? '') === 'channel') {
+        return (string) ($chat['id'] ?? '') === cardReceiptReviewChatId() && cardReceiptReviewChatId() !== '';
+    }
+    if (($chat['type'] ?? '') !== 'supergroup') return false;
+    $target = cardReceiptReviewGroupTarget();
+    return $target !== null
+        && (string) ($chat['id'] ?? '') === $target['chat_id']
+        && (int) ($update['callback_query']['message']['message_thread_id'] ?? 0) === $target['message_thread_id'];
 }
 
-function cardReceiptMarkReviewedInChannel($update, $callbackData, $statusText)
+function cardReceiptMarkReviewedAtDestination($update, $callbackData, $statusText)
 {
     if (!cardReceiptReviewCallbackChat($update, $callbackData)) return false;
     $message = $update['callback_query']['message'];
@@ -563,26 +587,26 @@ function cardReceiptMarkReviewedInChannel($update, $callbackData, $statusText)
             'message_id' => $messageId,
         ]);
     }
-    telegram('sendMessage', ['chat_id' => $chatId, 'text' => $statusText]);
+    $status = ['chat_id' => $chatId, 'text' => $statusText];
+    if (($message['chat']['type'] ?? '') === 'supergroup') $status['message_thread_id'] = (int) $message['message_thread_id'];
+    telegram('sendMessage', $status);
     $callbackId = (string) ($update['callback_query']['id'] ?? '');
     if ($callbackId !== '') telegram('answerCallbackQuery', ['callback_query_id' => $callbackId]);
     return true;
 }
 
-function cardReceiptSendToReviewChannel($photoId, $photoCaption, $reportText, $buttons)
+function cardReceiptSendToReviewDestination($photoId, $photoCaption, $reportText, $buttons)
 {
-    if (!cardReceiptReviewEnabled()) return false;
-    $chatId = cardReceiptReviewChatId();
-    $photo = telegram('sendPhoto', [
-        'chat_id' => $chatId,
+    $target = cardReceiptReviewTarget();
+    if ($target === null) return false;
+    $photo = telegram('sendPhoto', $target + [
         'photo' => $photoId,
         'caption' => htmlspecialchars((string) $photoCaption, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
         'protect_content' => 'true',
         'parse_mode' => 'HTML',
     ]);
     if (empty($photo['ok'])) return false;
-    $report = telegram('sendMessage', [
-        'chat_id' => $chatId,
+    $report = telegram('sendMessage', $target + [
         'text' => $reportText,
         'reply_markup' => $buttons,
         'parse_mode' => 'HTML',

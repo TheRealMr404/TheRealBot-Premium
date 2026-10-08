@@ -18,16 +18,24 @@ if (!in_array($from_id, $admin_ids))
 function cardReceiptReviewSettingsPanel()
 {
     global $from_id;
-    $enabled = cardReceiptReviewEnabled();
+    $mode = cardReceiptReviewMode();
     $channel = cardReceiptReviewChatId();
+    $group = select('setting', 'Channel_Report');
+    $groupId = trim((string) ($group['Channel_Report'] ?? ''));
+    $topic = cardReceiptReviewGroupTarget();
+    $modeLabels = ['admins' => 'پیام خصوصی ادمین‌ها', 'channel' => 'کانال', 'group' => 'تاپیک گروه اصلی'];
     $text = "<b>بررسی رسید کارت‌به‌کارت</b>\n\n"
-        . 'روش ارسال: ' . ($enabled ? 'کانال' : 'پیام خصوصی ادمین‌ها') . "\n"
+        . 'روش ارسال: ' . $modeLabels[$mode] . "\n"
         . 'کانال ثبت‌شده: ' . ($channel !== '' ? '<code>' . $channel . '</code>' : 'ثبت نشده')
-        . "\n\nدر حالت کانال، همان تصویر، گزارش و دکمه‌های بررسی به کانال ارسال می‌شوند. اگر ارسال ناموفق باشد، گزارش به ادمین‌ها می‌رود. کانال را خصوصی نگه دارید؛ اعضای کانال می‌توانند رسید و اطلاعات پرداخت را ببینند.";
+        . "\nگروه اصلی: " . (preg_match('/^-100[0-9]{5,17}$/', $groupId) ? '<code>' . $groupId . '</code>' : 'تنظیم نشده')
+        . "\nتاپیک رسیدها: " . ($topic !== null ? '<code>' . $topic['message_thread_id'] . '</code>' : 'آماده نیست')
+        . "\n\nفقط یکی از این سه روش فعال است. اگر ارسال به مقصد انتخابی ناموفق باشد، رسید به ادمین‌ها می‌رود. کانال یا گروه را فقط در اختیار افراد مجاز قرار دهید.";
     $rows = [
-        [['text' => $enabled ? 'خاموش کردن ارسال به کانال' : 'روشن کردن ارسال به کانال', 'callback_data' => 'card_receipt_channel_toggle']],
+        [['text' => ($mode === 'admins' ? '✓ ' : '') . 'پیام خصوصی ادمین‌ها', 'callback_data' => 'card_receipt_mode_admins']],
+        [['text' => ($mode === 'channel' ? '✓ ' : '') . 'کانال', 'callback_data' => 'card_receipt_mode_channel'], ['text' => ($mode === 'group' ? '✓ ' : '') . 'تاپیک گروه', 'callback_data' => 'card_receipt_mode_group']],
         [['text' => 'ثبت یا تغییر کانال', 'callback_data' => 'card_receipt_channel_set']],
-        [['text' => 'بررسی اتصال کانال', 'callback_data' => 'card_receipt_channel_test']],
+        [['text' => 'آزمایش کانال', 'callback_data' => 'card_receipt_channel_test'], ['text' => 'آزمایش تاپیک', 'callback_data' => 'card_receipt_group_test']],
+        [['text' => 'بازسازی تاپیک', 'callback_data' => 'card_receipt_group_rebuild']],
         [['text' => 'بازگشت', 'callback_data' => 'cartsetting']],
     ];
     sendmessage($from_id, $text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE), 'HTML');
@@ -39,6 +47,33 @@ function cardReceiptReviewSaveSetting($name, $value)
     $stmt = $pdo->prepare('INSERT INTO PaySetting (NamePay, ValuePay) VALUES (?, ?) ON DUPLICATE KEY UPDATE ValuePay=VALUES(ValuePay)');
     $stmt->execute([$name, $value]);
     clearSelectCache('PaySetting');
+}
+
+function cardReceiptReviewPrepareGroupTopic($forceNew = false)
+{
+    $setting = select('setting', 'Channel_Report');
+    $groupId = trim((string) ($setting['Channel_Report'] ?? ''));
+    if (!preg_match('/^-100[0-9]{5,17}$/', $groupId)) return [false, 'ابتدا گروه اصلی گزارش ربات را در تنظیمات گروه ثبت کنید.'];
+    $chat = telegram('getChat', ['chat_id' => $groupId]);
+    if (empty($chat['ok']) || ($chat['result']['type'] ?? '') !== 'supergroup' || empty($chat['result']['is_forum'])) {
+        return [false, 'گروه اصلی باید سوپرگروه با قابلیت موضوعات فعال باشد و ربات به آن دسترسی داشته باشد.'];
+    }
+    $target = cardReceiptReviewGroupTarget();
+    if (!$forceNew && $target !== null) {
+        $test = telegram('sendMessage', $target + ['text' => 'آزمایش تاپیک بررسی رسید کارت‌به‌کارت: اتصال برقرار است.']);
+        return !empty($test['ok'])
+            ? [true, 'تاپیک قبلی آماده است و دوباره ساخته نشد.']
+            : [false, 'تاپیک قبلی در دسترس نیست. دسترسی ربات را بررسی کنید یا از «بازسازی تاپیک» استفاده کنید.'];
+    }
+    $created = telegram('createForumTopic', ['chat_id' => $groupId, 'name' => 'بررسی رسید کارت‌به‌کارت']);
+    $topicId = (int) ($created['result']['message_thread_id'] ?? 0);
+    if (empty($created['ok']) || $topicId <= 0) return [false, 'ساخت تاپیک ممکن نشد. ربات باید مدیر گروه و دارای مجوز مدیریت موضوعات باشد.'];
+    cardReceiptReviewSaveSetting('card_receipt_review_group_id', $groupId);
+    cardReceiptReviewSaveSetting('card_receipt_review_topic_id', (string) $topicId);
+    $test = telegram('sendMessage', ['chat_id' => $groupId, 'message_thread_id' => $topicId, 'text' => 'تاپیک بررسی رسید کارت‌به‌کارت آماده است.']);
+    return !empty($test['ok'])
+        ? [true, 'تاپیک رسیدها ساخته و آزمایش شد.']
+        : [false, 'تاپیک ساخته شد اما ارسال پیام آزمایشی ممکن نشد. مجوز ارسال ربات را بررسی کنید.'];
 }
 
 function pasarguardAdminDashboardData($panel)
@@ -3775,7 +3810,7 @@ $caption";
 💎 موجودی بعد از تایید : {$Balance_id['Balance']}
 💸 مبلغ پرداختی: $format_price_cart تومان
 ";
-        if (!cardReceiptMarkReviewedInChannel($update, $datain, 'این رسید قبلاً بررسی شده است.')) {
+        if (!cardReceiptMarkReviewedAtDestination($update, $datain, 'این رسید قبلاً بررسی شده است.')) {
             Editmessagetext($from_id, $message_id, $textconfrom, $Confirm_pay);
         }
         return;
@@ -3810,7 +3845,7 @@ $caption";
         ]);
     }
     update("Payment_report", "payment_Status", "paid", "id_order", $Payment_report['id_order']);
-    cardReceiptMarkReviewedInChannel($update, $datain, '✅ رسید ' . $order_id . ' توسط مدیر ' . $from_id . ' تأیید شد.');
+    cardReceiptMarkReviewedAtDestination($update, $datain, '✅ رسید ' . $order_id . ' توسط مدیر ' . $from_id . ' تأیید شد.');
     update("user", "Processing_value_one", "none", "id", $Balance_id['id']);
     update("user", "Processing_value_tow", "none", "id", $Balance_id['id']);
     update("user", "Processing_value_four", "none", "id", $Balance_id['id']);
@@ -3838,11 +3873,11 @@ $caption";
         return;
     }
     update("Payment_report", "payment_Status", "reject", "id_order", $id_order);
-    $reviewedInChannel = cardReceiptMarkReviewedInChannel($update, $datain, '❌ رسید ' . $id_order . ' توسط مدیر ' . $from_id . ' رد شد؛ دلیل برای کاربر ارسال می‌شود.');
+    $reviewedAtDestination = cardReceiptMarkReviewedAtDestination($update, $datain, '❌ رسید ' . $id_order . ' توسط مدیر ' . $from_id . ' رد شد؛ دلیل برای کاربر ارسال می‌شود.');
 
     sendmessage($from_id, $textbotlang['Admin']['Payment']['Reasonrejecting'], $backadmin, 'HTML');
     step('reject-dec', $from_id);
-    if (!$reviewedInChannel) Editmessagetext($from_id, $message_id, $text_inline, null);
+    if (!$reviewedAtDestination) Editmessagetext($from_id, $message_id, $text_inline, null);
 } elseif ($user['step'] == "reject-dec") {
     $Payment_report = select("Payment_report", "*", "id_order", $user['Processing_value_one'], "select");
     update("Payment_report", "dec_not_confirmed", $text, "id_order", $user['Processing_value_one']);
@@ -4645,15 +4680,26 @@ $text_expie_agent
     outtypepanel($typepanel['type'], $textbotlang['Admin']['managepanel']['savedname']);
 } elseif (($datain == "cartsetting" && $adminrulecheck['rule'] == "administrator") || $text == "▶️ بازگشت به منوی تظنیمات کارت") {
     sendmessage($from_id, $textbotlang['users']['selectoption'], $CartManage, 'HTML');
-} elseif ($text == "📨 بررسی رسید در کانال" && $adminrulecheck['rule'] == "administrator") {
+} elseif (in_array($text, ["📨 بررسی رسید در کانال", "🧵 بررسی رسید در گروه"], true) && $adminrulecheck['rule'] == "administrator") {
+    cardReceiptReviewSettingsPanel();
+} elseif (preg_match('/^card_receipt_mode_(admins|channel|group)$/', (string) $datain, $modeMatch) && $adminrulecheck['rule'] == "administrator") {
+    telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
+    $chosen = $modeMatch[1];
+    if ($chosen === 'admins') {
+        cardReceiptReviewSaveSetting('card_receipt_review_mode', 'admins');
+    } elseif ($chosen === 'channel') {
+        $channel = cardReceiptReviewChatId();
+        $test = $channel === '' ? ['ok' => false] : telegram('sendMessage', ['chat_id' => $channel, 'text' => 'آزمایش اتصال کانال بررسی رسید کارت‌به‌کارت.']);
+        if (!empty($test['ok'])) cardReceiptReviewSaveSetting('card_receipt_review_mode', 'channel');
+        else sendmessage($from_id, 'ارسال به کانال ممکن نیست. ابتدا کانال و دسترسی ربات را تنظیم کنید.', null, 'HTML');
+    } else {
+        [$ready, $message] = cardReceiptReviewPrepareGroupTopic();
+        if ($ready) cardReceiptReviewSaveSetting('card_receipt_review_mode', 'group');
+        sendmessage($from_id, $message, null, 'HTML');
+    }
     cardReceiptReviewSettingsPanel();
 } elseif ($datain == 'card_receipt_channel_toggle' && $adminrulecheck['rule'] == "administrator") {
     telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
-    if (!cardReceiptReviewEnabled() && cardReceiptReviewChatId() === '') {
-        sendmessage($from_id, 'ابتدا کانال را ثبت کنید و دسترسی ارسال ربات را بررسی کنید.', null, 'HTML');
-    } else {
-        cardReceiptReviewSaveSetting('card_receipt_review_mode', cardReceiptReviewEnabled() ? 'admins' : 'channel');
-    }
     cardReceiptReviewSettingsPanel();
 } elseif ($datain == 'card_receipt_channel_set' && $adminrulecheck['rule'] == "administrator") {
     telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
@@ -4685,6 +4731,26 @@ $text_expie_agent
     $chatId = cardReceiptReviewChatId();
     $test = $chatId === '' ? ['ok' => false] : telegram('sendMessage', ['chat_id' => $chatId, 'text' => 'آزمایش ارسال رسید کارت‌به‌کارت: اتصال برقرار است.']);
     sendmessage($from_id, !empty($test['ok']) ? 'اتصال کانال برقرار است.' : 'ارسال به کانال ممکن نیست. شناسه و دسترسی ربات را بررسی کنید.', null, 'HTML');
+} elseif ($datain == 'card_receipt_group_test' && $adminrulecheck['rule'] == "administrator") {
+    telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
+    $target = cardReceiptReviewGroupTarget();
+    $test = $target === null ? ['ok' => false] : telegram('sendMessage', $target + ['text' => 'آزمایش تاپیک بررسی رسید کارت‌به‌کارت: اتصال برقرار است.']);
+    sendmessage($from_id, !empty($test['ok']) ? 'اتصال تاپیک برقرار است.' : 'تاپیک آماده نیست یا ربات اجازه ارسال ندارد. گروه اصلی و مجوزها را بررسی کنید.', null, 'HTML');
+} elseif ($datain == 'card_receipt_group_rebuild' && $adminrulecheck['rule'] == "administrator") {
+    telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
+    $confirmKeyboard = ['inline_keyboard' => [
+        [['text' => 'ساخت تاپیک جدید', 'callback_data' => 'card_receipt_group_rebuild_confirm']],
+        [['text' => 'انصراف', 'callback_data' => 'card_receipt_group_cancel']],
+    ]];
+    sendmessage($from_id, 'آیا تاپیک تازه‌ای برای رسیدها ساخته شود؟ تاپیک فعلی و پیام‌های قدیمی آن حذف نمی‌شوند.', json_encode($confirmKeyboard, JSON_UNESCAPED_UNICODE), 'HTML');
+} elseif ($datain == 'card_receipt_group_rebuild_confirm' && $adminrulecheck['rule'] == "administrator") {
+    telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
+    [$ready, $message] = cardReceiptReviewPrepareGroupTopic(true);
+    sendmessage($from_id, $message, null, 'HTML');
+    cardReceiptReviewSettingsPanel();
+} elseif ($datain == 'card_receipt_group_cancel' && $adminrulecheck['rule'] == "administrator") {
+    telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
+    cardReceiptReviewSettingsPanel();
 } elseif ($text == "💳 تنظیم شماره کارت" && $adminrulecheck['rule'] == "administrator") {
     $textcart = "💳 شماره کارت خود را ارسال کنید
 
@@ -7309,11 +7375,11 @@ $iduser  در ربات  رفع مسدود گردید
         return;
     }
     update("Payment_report", "payment_Status", "paid", "id_order", $id_order);
-    $reviewedInChannel = cardReceiptMarkReviewedInChannel($update, $datain, '✅ رسید ' . $id_order . ' برای افزایش دستی موجودی توسط مدیر ' . $from_id . ' پذیرفته شد.');
+    $reviewedAtDestination = cardReceiptMarkReviewedAtDestination($update, $datain, '✅ رسید ' . $id_order . ' برای افزایش دستی موجودی توسط مدیر ' . $from_id . ' پذیرفته شد.');
 
     sendmessage($from_id, $textbotlang['Admin']['ManageUser']['addbalanceuserdec'], $backadmin, 'html');
     step('addbalancemanual', $from_id);
-    if (!$reviewedInChannel) Editmessagetext($from_id, $message_id, $text_inline, null);
+    if (!$reviewedAtDestination) Editmessagetext($from_id, $message_id, $text_inline, null);
 } elseif ($user['step'] == "addbalancemanual") {
     if (!ctype_digit($text)) {
         sendmessage($from_id, $textbotlang['Admin']['Balance']['Invalidprice'], $backadmin, 'HTML');

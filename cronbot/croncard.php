@@ -16,7 +16,7 @@ $PaySetting = select("PaySetting","ValuePay","NamePay",'statuscardautoconfirm',"
 $paymentverify = select("PaySetting","ValuePay","NamePay","autoconfirmcart","select")['ValuePay'];
 if($PaySetting == "onautoconfirm")return;
 if($paymentverify == "offauto")return;
-$channelReview = cardReceiptReviewEnabled();
+$manualReview = cardReceiptReviewMode() !== 'admins';
     $datatxtbot = array();
 foreach ($datatextbotget as $row) {
     $datatxtbot[] = array(
@@ -38,7 +38,7 @@ foreach ($datatxtbot as $item) {
 $stmt = $pdo->prepare("SELECT * FROM Payment_report WHERE payment_Status = 'waiting' AND (Payment_Method = 'cart to cart' OR Payment_Method = 'arze digital offline') AND bottype IS NULL");
 $stmt->execute();
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    if ($channelReview && $row['Payment_Method'] === 'cart to cart') continue;
+    if ($manualReview && $row['Payment_Method'] === 'cart to cart') continue;
     $timecheck = $setting['timeauto_not_verify']*60;
     if($row['at_updated'] == null)continue;
     $since_start = time() - strtotime($row['at_updated']);
