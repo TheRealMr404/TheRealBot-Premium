@@ -254,7 +254,8 @@ function telegramFragmentSafeReason($error)
         'temporary_error' => 'پردازش خودکار سفارش در این لحظه کامل نشد.',
         'unavailable' => 'Fragment موقتاً در دسترس نیست.',
         'network' => 'ارتباط با Fragment موقتاً برقرار نشد.',
-        'rate_unavailable' => 'نرخ لحظه‌ای TON موقتاً در دسترس نیست؛ چند لحظه دیگر دوباره تلاش کنید.',
+        'rate_unavailable' => 'نرخ لحظه‌ای GRAM موقتاً در دسترس نیست؛ چند لحظه دیگر دوباره تلاش کنید.',
+        'market_closed' => 'بازار GRAM در نوبیتکس بسته است؛ پس از باز شدن بازار دوباره تلاش کنید.',
         'price_unavailable' => 'قیمت لحظه‌ای این محصول موقتاً قابل محاسبه نیست.',
     ];
     if (isset($reasons[$code])) return $reasons[$code];
@@ -329,42 +330,53 @@ function telegramFragmentPriceFromQuote($totalTon, $tonTomanRate, $profitPercent
 
 function telegramFragmentExtractNobitexRate(array $payload, $marketType)
 {
+    if (strtolower((string) ($payload['status'] ?? '')) !== 'ok') {
+        return 0.0;
+    }
     if ($marketType === 'rls') {
         $market = [];
-        foreach (['gram-rls', 'ton-rls', 'GRAM-RLS', 'TON-RLS'] as $symbol) {
+        foreach (['gram-rls', 'GRAM-RLS'] as $symbol) {
             if (is_array($payload['stats'][$symbol] ?? null)) {
                 $market = $payload['stats'][$symbol];
                 break;
             }
         }
-        foreach (['bestSell', 'mark', 'latest', 'bestBuy'] as $key) {
-            if (isset($market[$key]) && is_numeric($market[$key]) && (float) $market[$key] > 0) return (float) $market[$key] / 10;
-        }
-        return 0.0;
+        if (($market['isClosed'] ?? false) === true) return 0.0;
+        $rialPrice = $market['bestSell'] ?? 0;
+        return is_numeric($rialPrice) && (float) $rialPrice > 0 ? (float) $rialPrice / 10 : 0.0;
     }
-    $candidate = $payload['asks'][0][0] ?? ($payload['lastTradePrice'] ?? 0);
-    return is_numeric($candidate) && (float) $candidate > 0 ? (float) $candidate : 0.0;
+    if ($marketType !== 'irt') return 0.0;
+    $ask = $payload['asks'][0] ?? null;
+    $rialPrice = is_array($ask) ? ($ask[0] ?? 0) : 0;
+    return is_numeric($rialPrice) && (float) $rialPrice > 0 ? (float) $rialPrice / 10 : 0.0;
 }
 
 function telegramFragmentNobitexTonRate($force = false)
 {
     static $requestRate = null;
     if (!$force && $requestRate !== null) return $requestRate;
-    $cached = (float) telegramFragmentSetting('nobitex_gram_toman', telegramFragmentSetting('nobitex_ton_toman', '0'));
-    $cachedAt = strtotime(telegramFragmentSetting('nobitex_gram_rate_at', telegramFragmentSetting('nobitex_ton_rate_at', '1970-01-01 00:00:00'))) ?: 0;
+    $cached = (float) telegramFragmentSetting('nobitex_gram_toman_v2', '0');
+    $cachedAt = strtotime(telegramFragmentSetting('nobitex_gram_rate_at_v2', '1970-01-01 00:00:00')) ?: 0;
     if (!$force && $cached > 0 && $cachedAt >= time() - 60) return $requestRate = $cached;
 
     require_once __DIR__ . '/fragment-kit/php/HttpClient.php';
     $rate = 0.0;
+    $marketClosed = false;
     try {
         $response = HttpClient::send('GET', 'https://api.nobitex.ir/market/stats?srcCurrency=gram&dstCurrency=rls', ['timeout' => 8]);
         if ((int) $response['status'] >= 200 && (int) $response['status'] < 300) {
             $payload = json_decode((string) $response['body'], true);
-            if (is_array($payload)) $rate = telegramFragmentExtractNobitexRate($payload, 'rls');
+            if (is_array($payload)) {
+                $market = $payload['stats']['gram-rls'] ?? $payload['stats']['GRAM-RLS'] ?? null;
+                $marketClosed = strtolower((string) ($payload['status'] ?? '')) === 'ok'
+                    && is_array($market) && ($market['isClosed'] ?? false) === true;
+                $rate = telegramFragmentExtractNobitexRate($payload, 'rls');
+            }
         }
     } catch (Throwable $e) {
         telegramFragmentLogFailure('nobitex rate', $e);
     }
+    if ($marketClosed) throw new RuntimeException('market_closed|بازار GRAM در نوبیتکس بسته است.');
     if ($rate <= 0) {
         try {
             $response = HttpClient::send('GET', 'https://api.nobitex.ir/v3/orderbook/GRAMIRT', ['timeout' => 8]);
@@ -377,14 +389,16 @@ function telegramFragmentNobitexTonRate($force = false)
         }
     }
     if ($rate > 1000 && $rate < 10000000000) {
+        telegramFragmentSetSetting('nobitex_gram_toman_v2', (string) round($rate, 2));
+        telegramFragmentSetSetting('nobitex_gram_rate_at_v2', date('Y-m-d H:i:s'));
+        // Existing consumers can still read the corrected value during a rolling update.
         telegramFragmentSetSetting('nobitex_gram_toman', (string) round($rate, 2));
         telegramFragmentSetSetting('nobitex_gram_rate_at', date('Y-m-d H:i:s'));
-        // Keep the old cache keys populated so older code and rolling updates remain compatible.
         telegramFragmentSetSetting('nobitex_ton_toman', (string) round($rate, 2));
         telegramFragmentSetSetting('nobitex_ton_rate_at', date('Y-m-d H:i:s'));
         return $requestRate = $rate;
     }
-    if ($cached > 0 && $cachedAt >= time() - 900) return $requestRate = $cached;
+    if (!$force && $cached > 0 && $cachedAt >= time() - 120) return $requestRate = $cached;
     throw new RuntimeException('rate_unavailable|نرخ لحظه‌ای GRAM موقتاً در دسترس نیست.');
 }
 
@@ -1078,13 +1092,13 @@ function telegramFragmentAdminPricing($refreshRate = false)
     $starsFixed = (int) telegramFragmentSetting('profit_fixed_stars', '0');
     $premiumFixed = (int) telegramFragmentSetting('profit_fixed_premium', '0');
     $rounding = (int) telegramFragmentSetting('price_rounding', '1000');
-    $rate = (float) telegramFragmentSetting('nobitex_gram_toman', telegramFragmentSetting('nobitex_ton_toman', '0'));
-    $rateAt = telegramFragmentSetting('nobitex_gram_rate_at', telegramFragmentSetting('nobitex_ton_rate_at', 'هنوز دریافت نشده'));
+    $rate = (float) telegramFragmentSetting('nobitex_gram_toman_v2', '0');
+    $rateAt = telegramFragmentSetting('nobitex_gram_rate_at_v2', 'هنوز دریافت نشده');
     $rateError = '';
     if ($refreshRate) {
         try {
             $rate = telegramFragmentNobitexTonRate(true);
-            $rateAt = telegramFragmentSetting('nobitex_gram_rate_at', date('Y-m-d H:i:s'));
+            $rateAt = telegramFragmentSetting('nobitex_gram_rate_at_v2', date('Y-m-d H:i:s'));
         } catch (Throwable $e) {
             telegramFragmentLogFailure('admin rate refresh', $e);
             $rateError = telegramFragmentSafeReason($e);

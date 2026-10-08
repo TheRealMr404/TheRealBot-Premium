@@ -30,6 +30,7 @@ function pasarguardAdminDashboardData($panel)
     $sales = $stmt->fetch(PDO::FETCH_ASSOC) ?: ['orders_count' => 0, 'sales_sum' => 0];
 
     $panelName = htmlspecialchars((string) $panel['name_panel'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $authMode = pasarguardApiKey($panel) !== '' ? 'کلید API' : 'نام کاربری و رمز عبور';
     $connectionText = $connection['ok'] ? 'برقرار' : 'قطع است';
     $visibilityText = $panel['status'] === 'active' ? 'نمایش داده می‌شود' : 'مخفی است';
     $extendText = $panel['status_extend'] === 'on_extend' ? 'مجاز است' : 'غیرفعال است';
@@ -41,6 +42,7 @@ function pasarguardAdminDashboardData($panel)
     $text = "⚙️ <b>مدیریت نمایندگی پاسارگارد</b>\n\n"
         . "🖥 <b>نام پنل:</b> {$panelName}\n"
         . "🔌 <b>ارتباط با پنل:</b> {$connectionText}\n"
+        . "🔐 <b>روش اتصال:</b> {$authMode}\n"
         . "👁 <b>نمایش در بخش خرید:</b> {$visibilityText}\n"
         . "🔋 <b>تمدید نمایندگی:</b> {$extendText}\n"
         . "🧩 <b>نقش پیش‌فرض فروش:</b> <code>{$panel['inboundid']}</code>\n"
@@ -5052,6 +5054,7 @@ elseif (preg_match('/^set_cr_(wallet|network|style|msg)_([a-zA-Z0-9]+)$/', $data
 آمار پنل شما👇:
                              
 🖥 وضعیت اتصال پنل پاسارگارد: ✅ پنل متصل است
+🔐 روش اتصال: " . (pasarguardApiKey($marzban_list_get) !== '' ? 'کلید API' : 'نام کاربری و رمز عبور') . "
 👥  تعداد کل کاربران: $total_user
 👤 تعداد کاربران فعال: $active_users
 🛍 تعداد فروش کل در این پنل : $ListSell
@@ -5942,6 +5945,91 @@ elseif ($user['step'] == "cr_step_get_panel_emoji" && in_array($from_id, $admin_
     update("marzban_panel", "xui_auth_mode", 'token', "name_panel", $panel['name_panel']);
     update("marzban_panel", "datelogin", null, "name_panel", $panel['name_panel']);
     outtypepanel($panel['type'], "✅ توکن API ذخیره شد و اتصال پنل روی حالت توکن قرار گرفت.");
+    step('home', $from_id);
+} elseif ($text == "🔐 روش اتصال پاسارگارد" && $adminrulecheck['rule'] == "administrator") {
+    $panel = select('marzban_panel', '*', 'name_panel', $user['Processing_value'], 'select');
+    if (!$panel || !in_array($panel['type'] ?? '', ['pasarguard', 'pasarguard_reseller'], true)) {
+        sendmessage($from_id, "❌ پنل پاسارگارد پیدا نشد.", $keyboardadmin, 'HTML');
+        return;
+    }
+    $currentMode = pasarguardApiKey($panel) !== '' ? 'کلید API' : 'نام کاربری و رمز عبور';
+    $authKeyboard = json_encode([
+        'inline_keyboard' => [
+            [['text' => 'کلید API', 'callback_data' => 'pgpanel_auth#api_key']],
+            [['text' => 'نام کاربری و رمز عبور', 'callback_data' => 'pgpanel_auth#password']],
+        ],
+    ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    sendmessage($from_id, "🔐 <b>روش اتصال پاسارگارد</b>\n\nروش فعلی: <b>{$currentMode}</b>\n\nروش جدید را انتخاب کنید. اتصال پیش از ذخیره بررسی می‌شود.", $authKeyboard, 'HTML');
+} elseif (preg_match('/^pgpanel_auth#(api_key|password)$/', $datain, $pgAuthMatch) && $adminrulecheck['rule'] == "administrator") {
+    $panel = select('marzban_panel', '*', 'name_panel', $user['Processing_value'], 'select');
+    if (!$panel || !in_array($panel['type'] ?? '', ['pasarguard', 'pasarguard_reseller'], true)) {
+        sendmessage($from_id, "❌ پنل پاسارگارد پیدا نشد.", $keyboardadmin, 'HTML');
+        return;
+    }
+    deletemessage($from_id, $message_id);
+    if ($pgAuthMatch[1] === 'api_key') {
+        sendmessage($from_id, "🔑 کلید API جدید پاسارگارد را ارسال کنید. کلید باید با <code>pg_key_</code> شروع شود. تا زمان تأیید اتصال، روش فعلی فعال می‌ماند.", $backadmin, 'HTML');
+        step('pasarguard_switch_api_key', $from_id);
+    } else {
+        sendmessage($from_id, "👤 نام کاربری حساب پاسارگارد را ارسال کنید.", $backadmin, 'HTML');
+        step('pasarguard_switch_username', $from_id);
+    }
+} elseif ($user['step'] == 'pasarguard_switch_api_key' && $adminrulecheck['rule'] == "administrator") {
+    $panel = select('marzban_panel', '*', 'name_panel', $user['Processing_value'], 'select');
+    $apiKey = trim((string) $text);
+    deletemessage($from_id, $message_id);
+    if (!pasarguardIsApiKeyFormat($apiKey)) {
+        sendmessage($from_id, "❌ فرمت کلید API معتبر نیست. کلید کامل پاسارگارد را دوباره ارسال کنید.", $backadmin, 'HTML');
+        return;
+    }
+    try {
+        $result = pasarguardSwitchCredentials($panel, 'api_key', $apiKey);
+    } catch (Throwable $e) {
+        error_log('PasarGuard credential switch failed: ' . $e->getMessage());
+        $result = ['ok' => false, 'msg' => 'ذخیره اطلاعات اتصال انجام نشد.'];
+    }
+    if (!$result['ok']) {
+        sendmessage($from_id, "❌ {$result['msg']}\n\nکلید را دوباره ارسال کنید؛ روش قبلی همچنان فعال است.", $backadmin, 'HTML');
+        return;
+    }
+    outtypepanel($panel['type'], "✅ اتصال با کلید API برقرار شد و روش اتصال پنل تغییر کرد.");
+    step('home', $from_id);
+} elseif ($user['step'] == 'pasarguard_switch_username' && $adminrulecheck['rule'] == "administrator") {
+    $panel = select('marzban_panel', '*', 'name_panel', $user['Processing_value'], 'select');
+    if (!$panel || !in_array($panel['type'] ?? '', ['pasarguard', 'pasarguard_reseller'], true)) {
+        sendmessage($from_id, "❌ پنل پاسارگارد پیدا نشد.", $keyboardadmin, 'HTML');
+        step('home', $from_id);
+        return;
+    }
+    $username = trim((string) $text);
+    if ($username === '' || strlen($username) > 128 || preg_match('/\s/', $username)) {
+        sendmessage($from_id, "❌ نام کاربری معتبر نیست. نام کاربری پنل را بدون فاصله ارسال کنید.", $backadmin, 'HTML');
+        return;
+    }
+    update('user', 'Processing_value_tow', $username, 'id', $from_id);
+    sendmessage($from_id, "🔐 رمز عبور همین حساب پاسارگارد را ارسال کنید. اتصال پیش از ذخیره آزمایش می‌شود.", $backadmin, 'HTML');
+    step('pasarguard_switch_password', $from_id);
+} elseif ($user['step'] == 'pasarguard_switch_password' && $adminrulecheck['rule'] == "administrator") {
+    $panel = select('marzban_panel', '*', 'name_panel', $user['Processing_value'], 'select');
+    $username = trim((string) ($user['Processing_value_tow'] ?? ''));
+    $password = (string) $text;
+    deletemessage($from_id, $message_id);
+    if ($username === '' || $password === '' || pasarguardIsApiKeyFormat($password)) {
+        sendmessage($from_id, "❌ نام کاربری یا رمز عبور معتبر نیست. رمز عبور حساب را دوباره ارسال کنید.", $backadmin, 'HTML');
+        return;
+    }
+    try {
+        $result = pasarguardSwitchCredentials($panel, $username, $password);
+    } catch (Throwable $e) {
+        error_log('PasarGuard credential switch failed: ' . $e->getMessage());
+        $result = ['ok' => false, 'msg' => 'ذخیره اطلاعات اتصال انجام نشد.'];
+    }
+    if (!$result['ok']) {
+        sendmessage($from_id, "❌ {$result['msg']}\n\nرمز عبور را دوباره ارسال کنید؛ روش قبلی همچنان فعال است.", $backadmin, 'HTML');
+        return;
+    }
+    update('user', 'Processing_value_tow', null, 'id', $from_id);
+    outtypepanel($panel['type'], "✅ اتصال با نام کاربری و رمز عبور برقرار شد و روش اتصال پنل تغییر کرد.");
     step('home', $from_id);
 } elseif ($text == "👤 ویرایش نام کاربری" && $adminrulecheck['rule'] == "administrator") {
     sendmessage($from_id, $textbotlang['Admin']['managepanel']['getusernamenew'], $backadmin, 'HTML');

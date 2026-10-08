@@ -196,6 +196,40 @@ function pasarguardCheckConnection($panel)
     return pasarguardApiRequest($panel, 'GET', 'admin');
 }
 
+function pasarguardSwitchCredentials($panel, $username, $credential)
+{
+    global $pdo;
+
+    if (!is_array($panel) || empty($panel['code_panel']) || !in_array($panel['type'] ?? '', ['pasarguard', 'pasarguard_reseller'], true)) {
+        return ['ok' => false, 'status' => 0, 'msg' => 'پنل پاسارگارد پیدا نشد.'];
+    }
+    $candidate = $panel;
+    $candidate['username_panel'] = $username;
+    $candidate['password_panel'] = $credential;
+    $candidate['datelogin'] = null;
+    $candidate['code_panel'] = '';
+    $connection = pasarguardCheckConnection($candidate);
+    if (!$connection['ok']) {
+        return ['ok' => false, 'status' => (int) ($connection['status'] ?? 0), 'msg' => 'اتصال با اطلاعات جدید برقرار نشد. اطلاعات ورود و دسترسی‌های آن را بررسی کنید.'];
+    }
+
+    if ($panel['type'] === 'pasarguard') {
+        $access = pasarguardApiRequest($candidate, 'GET', 'groups/simple?offset=0&limit=1');
+        if (!$access['ok']) {
+            $access = pasarguardApiRequest($candidate, 'GET', 'groups?offset=0&limit=1');
+        }
+    } else {
+        $access = pasarguardApiRequest($candidate, 'GET', 'admin-roles/simple');
+    }
+    if (!$access['ok']) {
+        return ['ok' => false, 'status' => (int) ($access['status'] ?? 0), 'msg' => 'ورود برقرار شد، اما این حساب به گروه‌ها یا نقش‌های موردنیاز دسترسی ندارد.'];
+    }
+
+    $stmt = $pdo->prepare("UPDATE marzban_panel SET username_panel=?, password_panel=?, datelogin=NULL WHERE code_panel=? AND type IN ('pasarguard','pasarguard_reseller')");
+    $stmt->execute([$username, $credential, $panel['code_panel']]);
+    return ['ok' => true, 'status' => 200, 'msg' => ''];
+}
+
 function pasarguardListUsers($panel, $offset = 0, $limit = 20, $status = null)
 {
     $query = [

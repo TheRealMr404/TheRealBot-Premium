@@ -32,9 +32,14 @@ expectTrue($stored === 'signer_down|سرویس پردازش تراکنش موق�
 
 $price = telegramFragmentPriceFromQuote(1.25, 300000, 10, 5000, 1000);
 expectTrue($price['base'] === 375000 && $price['final'] === 418000 && $price['profit'] === 43000, 'Live price calculation is incorrect.');
-expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['gram-rls' => ['bestSell' => '3200000']]], 'rls') === 320000.0, 'Nobitex GRAM/RLS rate conversion is incorrect.');
-expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['ton-rls' => ['bestSell' => '3190000']]], 'rls') === 319000.0, 'Legacy Nobitex TON/RLS response is no longer compatible.');
-expectTrue(telegramFragmentExtractNobitexRate(['asks' => [['321000', '2']]], 'irt') === 321000.0, 'Nobitex IRT fallback parsing is incorrect.');
+expectTrue(telegramFragmentExtractNobitexRate(['status' => 'ok', 'stats' => ['gram-rls' => ['isClosed' => false, 'bestSell' => '3200000']]], 'rls') === 320000.0, 'Nobitex GRAM/RLS rate conversion is incorrect.');
+expectTrue(telegramFragmentExtractNobitexRate(['status' => 'ok', 'asks' => [['3210000', '2']]], 'irt') === 321000.0, 'Nobitex orderbook rial-to-toman conversion is incorrect.');
+$orderbookPrice = telegramFragmentPriceFromQuote(1.25, telegramFragmentExtractNobitexRate(['status' => 'ok', 'asks' => [['3210000', '2']]], 'irt'), 10, 5000, 1000);
+expectTrue($orderbookPrice['base'] === 401250 && $orderbookPrice['final'] === 447000, 'Orderbook rate did not reach the final customer price correctly.');
+expectTrue(telegramFragmentExtractNobitexRate(['status' => 'INVALID_CURRENCY', 'stats' => ['gram-rls' => ['bestSell' => '3200000']]], 'rls') === 0.0, 'Nobitex error response was accepted.');
+expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['gram-rls' => ['bestSell' => '3200000']]], 'rls') === 0.0, 'Nobitex response without a status was accepted.');
+expectTrue(telegramFragmentExtractNobitexRate(['status' => 'ok', 'stats' => ['gram-rls' => ['isClosed' => true, 'bestSell' => '3200000']]], 'rls') === 0.0, 'Closed Nobitex market was accepted.');
+expectTrue(telegramFragmentExtractNobitexRate(['status' => 'ok', 'asks' => [], 'lastTradePrice' => '3210000'], 'irt') === 0.0, 'Stale last trade was accepted without a sell offer.');
 try {
     telegramFragmentPriceFromQuote(0, 300000, 10, 0, 1000);
     throw new RuntimeException('Invalid Fragment quote was accepted.');

@@ -15,6 +15,7 @@ pgExpect(pasarguardApiKey(['password_panel' => $apiKey]) === $apiKey, 'PasarGuar
 pgExpect(pasarguardApiKey(['password_panel' => 'secret']) === '', 'A password was mistaken for an API key.');
 $auth = pasarguardAuthenticate(['password_panel' => $apiKey]);
 pgExpect(($auth['mode'] ?? '') === 'api_key' && ($auth['api_key'] ?? '') === $apiKey, 'API key authentication mode is incorrect.');
+pgExpect(!pasarguardSwitchCredentials([], 'admin', 'secret')['ok'], 'Invalid panel was accepted for credential migration.');
 
 $latestGroups = pasarguardExtractCollection([
     'groups' => [
