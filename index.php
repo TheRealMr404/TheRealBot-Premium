@@ -4490,6 +4490,15 @@ if ($user['step'] == "createusertest" || preg_match('/locationtest_(.*)/', $data
             $marzban_list_get['val_usertest']
         );
     }
+    $testPanelName = htmlspecialchars((string) $marzban_list_get['name_panel'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $testUsername = htmlspecialchars((string) $dataoutput['username'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+    $testInvoiceText = "🧾 <b>فاکتور سرویس تست</b>\n\n";
+    $testInvoiceText .= "پنل: <b>{$testPanelName}</b>\n";
+    $testInvoiceText .= "نام کاربری: <code>{$testUsername}</code>\n";
+    $testInvoiceText .= 'حجم: ' . (int) $marzban_list_get['val_usertest'] . " مگابایت\n";
+    $testInvoiceText .= 'زمان: ' . (int) $marzban_list_get['time_usertest'] . " ساعت\n";
+    $testInvoiceText .= "مبلغ: رایگان\nشناسه فاکتور: <code>{$randomString}</code>";
+    sendmessage($from_id, $testInvoiceText, null, 'HTML');
     sendMessageService($marzban_list_get, $dataoutput['configs'], $output_config_link, $dataoutput['username'], $usertestinfo, $textcreatuser, $randomString);
     sendmessage($from_id, $textbotlang['users']['selectoption'], $keyboard, 'HTML');
     step('home', $from_id);
@@ -5783,6 +5792,15 @@ elseif ($user['step'] == "tunnel_test_step_ip") {
         $date = time();
         $stmt_inv = $pdo->prepare("INSERT IGNORE INTO invoice (id_user, id_invoice, username, time_sell, Service_location, name_product, price_product, Volume, Service_time, Status) VALUES (?, ?, ?, ?, ?, 'سرویس تست تانل', '0', ?, ?, 'active')");
         $stmt_inv->execute([$from_id, $randomString, "tun_{$port}", $date, $panel_name, $test_volume_mb, $test_hours]);
+
+        $testPanelName = htmlspecialchars((string) $panel_name, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+        $testInvoiceText = "🧾 <b>فاکتور سرویس تست تانل</b>\n\n";
+        $testInvoiceText .= "پنل: <b>{$testPanelName}</b>\n";
+        $testInvoiceText .= "پورت: <code>{$port}</code>\n";
+        $testInvoiceText .= "حجم: {$test_volume_mb} مگابایت\n";
+        $testInvoiceText .= "زمان: {$test_hours} ساعت\n";
+        $testInvoiceText .= "مبلغ: رایگان\nشناسه فاکتور: <code>{$randomString}</code>";
+        sendmessage($from_id, $testInvoiceText, null, 'HTML');
 
         $panel_details = select("marzban_panel", "*", "name_panel", $panel_name, "select");
         $server_host = !empty($panel_details['linksubx']) && $panel_details['linksubx'] != "null"

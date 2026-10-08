@@ -721,6 +721,7 @@ function telegramFragmentStatusLabel($status)
         'review' => 'در حال بررسی',
         'completed' => 'تکمیل شده',
         'failed' => 'ناموفق',
+        'cancelled' => 'لغوشده',
     ][$status] ?? 'در حال پردازش';
 }
 
@@ -1211,6 +1212,22 @@ function telegramFragmentAdminProduct($id)
     virtualServicesAdminReply($text, $rows);
 }
 
+function telegramFragmentDeleteProduct($productId)
+{
+    global $pdo;
+    $productId = (int) $productId;
+    $pdo->beginTransaction();
+    try {
+        $pdo->prepare("UPDATE telegram_fragment_orders SET status='cancelled' WHERE product_id=? AND status='draft'")->execute([$productId]);
+        $pdo->prepare('UPDATE telegram_fragment_orders SET product_id=NULL WHERE product_id=?')->execute([$productId]);
+        $pdo->prepare('DELETE FROM telegram_fragment_products WHERE id=?')->execute([$productId]);
+        $pdo->commit();
+    } catch (Throwable $e) {
+        if ($pdo->inTransaction()) $pdo->rollBack();
+        throw $e;
+    }
+}
+
 function telegramFragmentAdminOrders()
 {
     global $pdo;
@@ -1469,9 +1486,7 @@ function telegramFragmentAdminHandleRequest()
     if (preg_match('/^vsa_fg_togglep_(\d+)$/', $datain, $m)) { $pdo->prepare('UPDATE telegram_fragment_products SET is_active=1-is_active WHERE id=?')->execute([(int) $m[1]]); telegramFragmentAdminProduct($m[1]); return true; }
     if (preg_match('/^vsa_fg_price_(\d+)$/', $datain, $m)) { virtualServicesAdminSetState('vsa_fg_price_' . $m[1]); virtualServicesAdminReply('قیمت جدید را به تومان و فقط به‌صورت عدد بفرستید.', [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_p_' . $m[1]]]]); return true; }
     if (preg_match('/^vsa_fg_delete_(\d+)$/', $datain, $m)) {
-        $used = $pdo->prepare('SELECT COUNT(*) FROM telegram_fragment_orders WHERE product_id=?'); $used->execute([(int) $m[1]]);
-        if ((int) $used->fetchColumn() > 0) $pdo->prepare('UPDATE telegram_fragment_products SET is_active=0 WHERE id=?')->execute([(int) $m[1]]);
-        else $pdo->prepare('DELETE FROM telegram_fragment_products WHERE id=?')->execute([(int) $m[1]]);
+        telegramFragmentDeleteProduct($m[1]);
         telegramFragmentAdminProducts(); return true;
     }
     if (preg_match('/^vsa_fg_o_(\d+)$/', $datain, $m)) { telegramFragmentAdminOrder($m[1]); return true; }
