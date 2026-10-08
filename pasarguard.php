@@ -80,12 +80,26 @@ function pasarguardGeneratePassword($username = '')
     return 'PG@az19' . bin2hex(random_bytes(6));
 }
 
-function pasarguardHttpRequest($panel, $method, $path, $payload = null, $token = null, $form = false)
+function pasarguardApiKey($panel)
+{
+    $password = trim((string) ($panel['password_panel'] ?? ''));
+    return pasarguardIsApiKeyFormat($password) ? $password : '';
+}
+
+function pasarguardIsApiKeyFormat($value)
+{
+    return (bool) preg_match('/^pg_key_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i', trim((string) $value));
+}
+
+function pasarguardHttpRequest($panel, $method, $path, $payload = null, $token = null, $form = false, $apiKey = '')
 {
     $url = pasarguardNormalizeUrl($panel['url_panel'] ?? '') . '/api/' . ltrim($path, '/');
     $headers = ['Accept: application/json'];
     if ($token) {
         $headers[] = 'Authorization: Bearer ' . $token;
+    }
+    if ($apiKey !== '') {
+        $headers[] = 'X-Api-Key: ' . $apiKey;
     }
     if ($payload !== null) {
         if ($form) {
@@ -131,9 +145,13 @@ function pasarguardHttpRequest($panel, $method, $path, $payload = null, $token =
 
 function pasarguardAuthenticate($panel, $force = false)
 {
+    $apiKey = pasarguardApiKey($panel);
+    if ($apiKey !== '') {
+        return ['ok' => true, 'token' => null, 'api_key' => $apiKey, 'mode' => 'api_key'];
+    }
     $cached = json_decode((string) ($panel['datelogin'] ?? ''), true);
     if (!$force && is_array($cached) && !empty($cached['pasarguard_token']) && (int) ($cached['expires_at'] ?? 0) > time() + 30) {
-        return ['ok' => true, 'token' => $cached['pasarguard_token']];
+        return ['ok' => true, 'token' => $cached['pasarguard_token'], 'api_key' => '', 'mode' => 'password'];
     }
 
     $response = pasarguardHttpRequest($panel, 'POST', 'admin/token', [
@@ -153,7 +171,7 @@ function pasarguardAuthenticate($panel, $force = false)
     if (!empty($panel['code_panel']) && function_exists('update')) {
         update('marzban_panel', 'datelogin', json_encode($cache), 'code_panel', $panel['code_panel']);
     }
-    return ['ok' => true, 'token' => $token];
+    return ['ok' => true, 'token' => $token, 'api_key' => '', 'mode' => 'password'];
 }
 
 function pasarguardApiRequest($panel, $method, $path, $payload = null, $retry = true)
@@ -162,13 +180,13 @@ function pasarguardApiRequest($panel, $method, $path, $payload = null, $retry = 
     if (!$auth['ok']) {
         return ['ok' => false, 'status' => 401, 'data' => null, 'msg' => $auth['msg']];
     }
-    $response = pasarguardHttpRequest($panel, $method, $path, $payload, $auth['token']);
-    if ($response['status'] === 401 && $retry) {
+    $response = pasarguardHttpRequest($panel, $method, $path, $payload, $auth['token'] ?? null, false, $auth['api_key'] ?? '');
+    if ($response['status'] === 401 && $retry && ($auth['mode'] ?? '') !== 'api_key') {
         $auth = pasarguardAuthenticate($panel, true);
         if (!$auth['ok']) {
             return ['ok' => false, 'status' => 401, 'data' => null, 'msg' => $auth['msg']];
         }
-        return pasarguardHttpRequest($panel, $method, $path, $payload, $auth['token']);
+        return pasarguardHttpRequest($panel, $method, $path, $payload, $auth['token'] ?? null, false, $auth['api_key'] ?? '');
     }
     return $response;
 }
@@ -249,17 +267,57 @@ function pasarguardResolveGroupIds($panel, $product = [])
 
 function pasarguardGetGroups($panel)
 {
-    $response = pasarguardApiRequest($panel, 'GET', 'groups?offset=0&limit=100');
-    if (!$response['ok']) {
-        $response = pasarguardApiRequest($panel, 'GET', 'groups/simple?offset=0&limit=100');
+    $lastResponse = ['ok' => false, 'status' => 0, 'data' => null, 'msg' => 'دریافت گروه‌های پاسارگارد ناموفق بود.'];
+    foreach (['groups', 'groups/simple'] as $endpoint) {
+        $items = [];
+        $offset = 0;
+        $total = null;
+        do {
+            $response = pasarguardApiRequest($panel, 'GET', $endpoint . '?' . http_build_query([
+                'offset' => $offset,
+                'limit' => 100,
+            ]));
+            $lastResponse = $response;
+            if (!$response['ok']) {
+                $items = [];
+                break;
+            }
+            $data = is_array($response['data']) ? $response['data'] : [];
+            $page = pasarguardExtractCollection($data, ['groups', 'items', 'results']);
+            foreach ($page as $group) {
+                if (!is_array($group) || (int) ($group['id'] ?? 0) < 1 || !empty($group['is_disabled'])) {
+                    continue;
+                }
+                $items[(int) $group['id']] = $group;
+            }
+            $total = isset($data['total']) ? (int) $data['total'] : (isset($data['count']) ? (int) $data['count'] : null);
+            $offset += count($page);
+        } while (count($page) === 100 && ($total === null || $offset < $total) && $offset < 5000);
+
+        if ($response['ok']) {
+            $response['items'] = array_values($items);
+            $response['total'] = $total ?? count($items);
+            return $response;
+        }
     }
-    if (!$response['ok']) {
-        return $response;
+    return $lastResponse;
+}
+
+function pasarguardExtractCollection($data, $keys = ['items', 'results', 'data'])
+{
+    if (!is_array($data)) {
+        return [];
     }
-    $items = $response['data']['groups'] ?? $response['data']['items'] ?? $response['data'] ?? [];
-    $response['items'] = is_array($items) ? array_values($items) : [];
-    $response['total'] = (int) ($response['data']['total'] ?? count($response['items']));
-    return $response;
+    foreach ($keys as $key) {
+        if (isset($data[$key]) && is_array($data[$key])) {
+            return pasarguardExtractCollection($data[$key], $keys);
+        }
+    }
+    if (isset($data['id']) && (is_numeric($data['id']) || is_string($data['id']))) {
+        return [$data];
+    }
+    $values = array_values($data);
+    return $values && count(array_filter($values, 'is_array')) === count($values) ? $values : [];
 }
 
 function pasarguardGroupsKeyboardData($panel, $selectedIds, $callbackPrefix, $doneCallback)
@@ -392,7 +450,7 @@ function pasarguardRevokeUserSubscription($panel, $username)
     return pasarguardApiRequest($panel, 'POST', 'user/' . rawurlencode((string) $username) . '/revoke_sub');
 }
 
-function pasarguardPublicRequest($url, $maxBytes = 12582912)
+function pasarguardPublicRequest($url, $maxBytes = 12582912, $headers = [])
 {
     $url = trim((string) $url);
     if (!filter_var($url, FILTER_VALIDATE_URL) || !preg_match('~^https?://~i', $url)) {
@@ -406,7 +464,7 @@ function pasarguardPublicRequest($url, $maxBytes = 12582912)
         CURLOPT_CONNECTTIMEOUT => 12,
         CURLOPT_TIMEOUT => 35,
         CURLOPT_HEADER => true,
-        CURLOPT_HTTPHEADER => ['Accept: */*'],
+        CURLOPT_HTTPHEADER => array_merge(['Accept: */*'], array_values(array_filter((array) $headers, 'is_string'))),
     ]);
     $raw = curl_exec($curl);
     $curlError = curl_error($curl);
@@ -425,25 +483,75 @@ function pasarguardPublicRequest($url, $maxBytes = 12582912)
     return ['ok' => $ok, 'status' => $statusCode, 'body' => $body, 'content_type' => $contentType, 'msg' => $ok ? '' : 'خطای HTTP ' . $statusCode];
 }
 
+function pasarguardParseSubscriptionLinks($body)
+{
+    $body = trim((string) $body);
+    if ($body === '') {
+        return [];
+    }
+    $json = json_decode($body, true);
+    if (is_array($json)) {
+        $candidates = pasarguardFlattenSubscriptionValues($json);
+        if ($candidates) {
+            $body = implode("\n", $candidates);
+        }
+    }
+    $decoded = base64_decode(preg_replace('/\s+/', '', $body), true);
+    if ($decoded !== false && preg_match('/(?:vmess|vless|trojan|ss|wireguard|hysteria2?):\/\//i', $decoded)) {
+        $body = $decoded;
+    }
+    $links = preg_split('/\r?\n/', trim($body), -1, PREG_SPLIT_NO_EMPTY);
+    return array_values(array_unique(array_filter(array_map('trim', $links), function ($link) {
+        return preg_match('/^(?:vmess|vless|trojan|ss|ssconf|wireguard|wg|hysteria2?):\/\//i', $link);
+    })));
+}
+
+function pasarguardFlattenSubscriptionValues($value)
+{
+    if (is_string($value)) {
+        return [$value];
+    }
+    if (!is_array($value)) {
+        return [];
+    }
+    $values = [];
+    foreach ($value as $key => $item) {
+        if (in_array((string) $key, ['link', 'url', 'config', 'content'], true) && is_string($item)) {
+            $values[] = $item;
+            continue;
+        }
+        if (is_array($item)) {
+            $values = array_merge($values, pasarguardFlattenSubscriptionValues($item));
+        } elseif (is_int($key) && is_string($item)) {
+            $values[] = $item;
+        }
+    }
+    return $values;
+}
+
 function pasarguardGetSubscriptionLinks($panel, $subscriptionUrl)
 {
     $subscriptionUrl = rtrim(pasarguardAbsoluteUrl($panel, $subscriptionUrl), '/');
     if ($subscriptionUrl === '') {
         return [];
     }
-    $response = pasarguardPublicRequest($subscriptionUrl . '/links', 4194304);
-    if (!$response['ok']) {
-        return [];
+    $requests = [
+        [$subscriptionUrl . '/raw', ['User-Agent: v2rayNG']],
+        [$subscriptionUrl, ['User-Agent: v2rayNG']],
+        // PasarGuard releases before the subscription router rewrite used this path.
+        [$subscriptionUrl . '/links', ['User-Agent: v2rayNG']],
+    ];
+    foreach ($requests as [$url, $headers]) {
+        $response = pasarguardPublicRequest($url, 4194304, $headers);
+        if (!$response['ok']) {
+            continue;
+        }
+        $links = pasarguardParseSubscriptionLinks($response['body']);
+        if ($links) {
+            return $links;
+        }
     }
-    $body = trim((string) $response['body']);
-    $decoded = base64_decode($body, true);
-    if ($decoded !== false && preg_match('/(?:vmess|vless|trojan|ss|wireguard|hysteria2?):\/\//i', $decoded)) {
-        $body = $decoded;
-    }
-    $links = preg_split('/\r?\n/', trim($body), -1, PREG_SPLIT_NO_EMPTY);
-    return array_values(array_filter(array_map('trim', $links), function ($link) {
-        return preg_match('/^[a-z][a-z0-9+.-]*:\/\//i', $link);
-    }));
+    return [];
 }
 
 function pasarguardUserOutput($panel, $user, $customSubscriptionUrl = null)
@@ -477,21 +585,53 @@ function pasarguardPrepareWireGuardFiles($panel, $username)
     if (!$userResponse['ok'] || empty($userResponse['data']['subscription_url'])) {
         return [];
     }
-    $proxySettings = $userResponse['data']['proxy_settings'] ?? [];
-    if (!is_array($proxySettings) || !array_key_exists('wireguard', $proxySettings)) {
-        return [];
-    }
     $subscriptionUrl = rtrim(pasarguardAbsoluteUrl($panel, $userResponse['data']['subscription_url']), '/');
-    $download = pasarguardPublicRequest($subscriptionUrl . '/wireguard');
+    $download = pasarguardPublicRequest($subscriptionUrl . '/wireguard', 12582912, [
+        'Accept: application/zip, application/x-wireguard-profile, text/plain',
+        'User-Agent: WireGuard',
+    ]);
     if (!$download['ok'] || $download['body'] === '') {
         return [];
     }
 
-    $zipPath = tempnam(sys_get_temp_dir(), 'pgwg_');
-    if ($zipPath === false || file_put_contents($zipPath, $download['body']) === false) {
-        return [];
+    $body = (string) $download['body'];
+    $decodedJson = json_decode($body, true);
+    if (is_array($decodedJson)) {
+        foreach (['config', 'content', 'data'] as $key) {
+            if (is_string($decodedJson[$key] ?? null) && $decodedJson[$key] !== '') {
+                $body = $decodedJson[$key];
+                break;
+            }
+        }
+    }
+    if (strpos($body, '[Interface]') === false && substr($body, 0, 2) !== 'PK') {
+        $decodedBody = base64_decode(preg_replace('/\s+/', '', $body), true);
+        if (is_string($decodedBody) && (strpos($decodedBody, '[Interface]') !== false || substr($decodedBody, 0, 2) === 'PK')) {
+            $body = $decodedBody;
+        }
     }
     $safeUser = preg_replace('/[^a-zA-Z0-9_-]+/', '_', (string) $username);
+    if (strpos($body, '[Interface]') !== false && substr($body, 0, 2) !== 'PK') {
+        $path = tempnam(sys_get_temp_dir(), 'pgconf_');
+        if ($path === false) {
+            return [];
+        }
+        $finalPath = $path . '.conf';
+        @unlink($path);
+        if (file_put_contents($finalPath, $body) === false) {
+            return [];
+        }
+        return [[
+            'path' => $finalPath,
+            'name' => ($safeUser ?: 'pasarguard') . '-wireguard.conf',
+            'mime' => 'application/x-wireguard-profile',
+        ]];
+    }
+
+    $zipPath = tempnam(sys_get_temp_dir(), 'pgwg_');
+    if ($zipPath === false || file_put_contents($zipPath, $body) === false) {
+        return [];
+    }
     if (!class_exists('ZipArchive')) {
         $finalZipPath = $zipPath . '.zip';
         @unlink($finalZipPath);

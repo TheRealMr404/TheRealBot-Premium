@@ -32,7 +32,8 @@ expectTrue($stored === 'signer_down|سرویس پردازش تراکنش موق�
 
 $price = telegramFragmentPriceFromQuote(1.25, 300000, 10, 5000, 1000);
 expectTrue($price['base'] === 375000 && $price['final'] === 418000 && $price['profit'] === 43000, 'Live price calculation is incorrect.');
-expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['ton-rls' => ['bestSell' => '3200000']]], 'rls') === 320000.0, 'Nobitex RLS rate conversion is incorrect.');
+expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['gram-rls' => ['bestSell' => '3200000']]], 'rls') === 320000.0, 'Nobitex GRAM/RLS rate conversion is incorrect.');
+expectTrue(telegramFragmentExtractNobitexRate(['stats' => ['ton-rls' => ['bestSell' => '3190000']]], 'rls') === 319000.0, 'Legacy Nobitex TON/RLS response is no longer compatible.');
 expectTrue(telegramFragmentExtractNobitexRate(['asks' => [['321000', '2']]], 'irt') === 321000.0, 'Nobitex IRT fallback parsing is incorrect.');
 try {
     telegramFragmentPriceFromQuote(0, 300000, 10, 0, 1000);

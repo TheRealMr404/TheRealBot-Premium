@@ -918,9 +918,16 @@ if (in_array($text, $textadmin) || $datain == "admin") {
         sendmessage($from_id, "🔐 <b>ربات چگونه به پنل متصل شود؟</b>\n\nاستفاده از <b>API Token</b> پیشنهاد می‌شود؛ راه‌اندازی آن ساده‌تر و اتصال آن پایدارتر است. اگر ورود دومرحله‌ای پنل فعال است، حتماً همین گزینه را انتخاب کنید.", $authKeyboard, 'HTML');
         step('xui_add_auth_choice', $from_id);
         return;
-    } elseif ($userdata['type'] == 'pasarguard_reseller') {
-        sendmessage($from_id, "👤 <b>نام کاربری مالک پنل پاسارگارد را ارسال کنید</b>\n\nاین حساب باید اجازه ساخت و مدیریت ادمین‌ها را داشته باشد.", $backadmin, 'HTML');
-        step('add_username_panel', $from_id);
+    } elseif (in_array($userdata['type'], ['pasarguard', 'pasarguard_reseller'], true)) {
+        $authKeyboard = json_encode([
+            'inline_keyboard' => [
+                [['text' => 'کلید API (پیشنهادی)', 'callback_data' => 'pgaddauth#api_key']],
+                [['text' => 'نام کاربری و رمز عبور', 'callback_data' => 'pgaddauth#password']],
+                [['text' => $textbotlang['Admin']['backadmin'], 'callback_data' => 'admin']],
+            ],
+        ], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        sendmessage($from_id, "🔐 <b>روش اتصال به پاسارگارد را انتخاب کنید</b>\n\nکلید API اتصال پایدارتر و امن‌تری دارد. کلید باید دسترسی لازم برای مدیریت کاربران و مشاهده گروه‌ها را داشته باشد.", $authKeyboard, 'HTML');
+        step('pasarguard_add_auth_choice', $from_id);
         return;
     }
     sendmessage($from_id, $textbotlang['Admin']['managepanel']['usernameset'], $backadmin, 'HTML');
@@ -941,6 +948,42 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     } else {
         sendmessage($from_id, $textbotlang['Admin']['managepanel']['usernameset'], $backadmin, 'HTML');
         step('add_username_panel', $from_id);
+    }
+} elseif (preg_match('/^pgaddauth#(api_key|password)$/', $datain, $dataget) && $adminrulecheck['rule'] == "administrator") {
+    $userdata = json_decode($user['Processing_value'], true);
+    if (!in_array($userdata['type'] ?? '', ['pasarguard', 'pasarguard_reseller'], true)) {
+        deletemessage($from_id, $message_id);
+        sendmessage($from_id, "❌ اطلاعات افزودن پنل کامل نیست. لطفاً افزودن پنل را دوباره شروع کنید.", $backadmin, 'HTML');
+        step('home', $from_id);
+        return;
+    }
+    savedata('save', 'pasarguard_auth_mode', $dataget[1]);
+    deletemessage($from_id, $message_id);
+    if ($dataget[1] === 'api_key') {
+        sendmessage($from_id, "🔑 <b>کلید API پاسارگارد را ارسال کنید</b>\n\nکلید از پنل پاسارگارد و بخش مدیریت API Key ساخته می‌شود و با <code>pg_key_</code> شروع می‌شود.", $backadmin, 'HTML');
+        step('add_pasarguard_api_key', $from_id);
+    } else {
+        $prompt = ($userdata['type'] ?? '') === 'pasarguard_reseller'
+            ? "👤 <b>نام کاربری مالک پنل پاسارگارد را ارسال کنید</b>\n\nاین حساب باید اجازه ساخت و مدیریت ادمین‌ها را داشته باشد."
+            : $textbotlang['Admin']['managepanel']['usernameset'];
+        sendmessage($from_id, $prompt, $backadmin, 'HTML');
+        step('add_username_panel', $from_id);
+    }
+} elseif ($user['step'] == 'add_pasarguard_api_key') {
+    $userdata = json_decode($user['Processing_value'], true);
+    $apiKey = trim((string) $text);
+    if (!pasarguardIsApiKeyFormat($apiKey)) {
+        sendmessage($from_id, "❌ کلید API معتبر نیست. کلید کامل را بدون فاصله ارسال کنید؛ مقدار باید با <code>pg_key_</code> شروع شود.", $backadmin, 'HTML');
+        return;
+    }
+    savedata('save', 'username', 'api_key');
+    savedata('save', 'password', $apiKey);
+    if (($userdata['type'] ?? '') === 'pasarguard_reseller') {
+        sendmessage($from_id, "🧩 <b>شناسه نقش پیش‌فرض نمایندگی را ارسال کنید</b>\n\nکلید API باید مجوز مشاهده نقش‌ها و ساخت ادمین را داشته باشد.", $backadmin, 'HTML');
+        step('add_pasarguard_role', $from_id);
+    } else {
+        sendmessage($from_id, $textbotlang['Admin']['managepanel']['getlimitedpanel'], $backadmin, 'HTML');
+        step('getlimitedpanel', $from_id);
     }
 } elseif ($user['step'] == 'add_xui_token_panel') {
     $token = trim($text);
@@ -1012,6 +1055,21 @@ if (in_array($text, $textadmin) || $datain == "admin") {
     savedata("save", "limitpanel", $text);
     $userdata = json_decode($user['Processing_value'], true);
     $randomString = bin2hex(random_bytes(2));
+    if (($userdata['type'] ?? '') === 'pasarguard') {
+        $temporaryPasarguardPanel = [
+            'url_panel' => $userdata['url_panel'] ?? '',
+            'username_panel' => $userdata['username'] ?? '',
+            'password_panel' => $userdata['password'] ?? '',
+            'datelogin' => null,
+        ];
+        $connection = pasarguardCheckConnection($temporaryPasarguardPanel);
+        if (!$connection['ok']) {
+            $reason = htmlspecialchars((string) $connection['msg'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
+            sendmessage($from_id, "❌ <b>اتصال به پنل پاسارگارد برقرار نشد.</b>\n\nجزئیات: <code>{$reason}</code>\n\nآدرس و روش ورود را بررسی کنید و افزودن پنل را دوباره انجام دهید.", $backadmin, 'HTML');
+            step('home', $from_id);
+            return;
+        }
+    }
     if (($userdata['type'] ?? '') === 'rebecca') {
         $temporaryRebeccaPanel = [
             'code_panel' => '',
@@ -1173,6 +1231,8 @@ if (in_array($text, $textadmin) || $datain == "admin") {
             $reason = htmlspecialchars((string) $connection['msg'], ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
             sendmessage($from_id, "⚠️ پنل ذخیره شد اما اتصال API برقرار نشد.\n\nعلت: <code>{$reason}</code>\nاطلاعات ورود را از مدیریت پنل بررسی کنید.", null, 'HTML');
         }
+    } elseif ($userdata['type'] == "pasarguard") {
+        sendmessage($from_id, "✅ <b>پنل پاسارگارد با موفقیت متصل و ذخیره شد.</b>\n\nبرای تحویل کانفیگ، از مسیر <b>مدیریت پنل‌ها ← مدیریت این پنل ← گروه‌های پاسارگارد</b> حداقل یک گروه فعال را انتخاب کنید.", null, 'HTML');
     } elseif ($userdata['type'] == "rebecca") {
         sendmessage($from_id, "✅ <b>پنل ربکا با موفقیت متصل و ذخیره شد.</b>\n\nبرای آماده‌سازی فروش، از مسیر <b>مدیریت پنل‌ها ← مدیریت این پنل ← سرویس پیش‌فرض ربکا</b> سرویس موردنظر را انتخاب کنید. تا قبل از این تنظیم، هیچ کاربری در پنل ساخته نمی‌شود.", null, 'HTML');
     }
