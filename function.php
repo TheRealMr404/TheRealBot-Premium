@@ -530,6 +530,67 @@ function getPaySettingValue($name, $default = null)
 
     return $result['ValuePay'];
 }
+
+function cardReceiptReviewChatId()
+{
+    $id = trim((string) getPaySettingValue('card_receipt_review_chat_id', ''));
+    return preg_match('/^-100[0-9]{5,17}$/', $id) ? $id : '';
+}
+
+function cardReceiptReviewEnabled()
+{
+    return getPaySettingValue('card_receipt_review_mode', 'admins') === 'channel'
+        && cardReceiptReviewChatId() !== '';
+}
+
+function cardReceiptReviewCallbackChat($update, $callbackData)
+{
+    $chat = $update['callback_query']['message']['chat'] ?? [];
+    return ($chat['type'] ?? '') === 'channel'
+        && (string) ($chat['id'] ?? '') === cardReceiptReviewChatId()
+        && preg_match('/^(Confirm_pay|reject_pay|addbalamceuser|blockuserfake)_\w+$/', (string) $callbackData) === 1;
+}
+
+function cardReceiptMarkReviewedInChannel($update, $callbackData, $statusText)
+{
+    if (!cardReceiptReviewCallbackChat($update, $callbackData)) return false;
+    $message = $update['callback_query']['message'];
+    $chatId = (string) $message['chat']['id'];
+    $messageId = (int) ($message['message_id'] ?? 0);
+    if ($messageId > 0) {
+        telegram('editMessageReplyMarkup', [
+            'chat_id' => $chatId,
+            'message_id' => $messageId,
+        ]);
+    }
+    telegram('sendMessage', ['chat_id' => $chatId, 'text' => $statusText]);
+    $callbackId = (string) ($update['callback_query']['id'] ?? '');
+    if ($callbackId !== '') telegram('answerCallbackQuery', ['callback_query_id' => $callbackId]);
+    return true;
+}
+
+function cardReceiptSendToReviewChannel($photoId, $photoCaption, $reportText, $buttons)
+{
+    if (!cardReceiptReviewEnabled()) return false;
+    $chatId = cardReceiptReviewChatId();
+    $photo = telegram('sendPhoto', [
+        'chat_id' => $chatId,
+        'photo' => $photoId,
+        'caption' => htmlspecialchars((string) $photoCaption, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8'),
+        'protect_content' => 'true',
+        'parse_mode' => 'HTML',
+    ]);
+    if (empty($photo['ok'])) return false;
+    $report = telegram('sendMessage', [
+        'chat_id' => $chatId,
+        'text' => $reportText,
+        'reply_markup' => $buttons,
+        'parse_mode' => 'HTML',
+        'protect_content' => 'true',
+    ]);
+    return !empty($report['ok']);
+}
+
 function generateUUID()
 {
     $data = openssl_random_pseudo_bytes(16);

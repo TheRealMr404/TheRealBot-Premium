@@ -9,6 +9,22 @@ function identityExpect(bool $condition, string $message): void
     if (!$condition) throw new RuntimeException($message);
 }
 
+function update(...$args): void
+{
+    $GLOBALS['identityStepWrites'][] = $args;
+}
+
+function step($value, $userId): void
+{
+    $GLOBALS['identityStepWrites'][] = [$value, $userId];
+}
+
+function sendmessage($chatId, $message, $markup, $parseMode): array
+{
+    $GLOBALS['identitySentMessages'][] = [$chatId, $message, $markup, $parseMode];
+    return ['ok' => true];
+}
+
 identityExpect(telegramProductsIdentityModeLabel('phone') === 'تأیید شماره', 'Phone mode label is missing.');
 identityExpect(telegramProductsIdentityNormalizePhone('+989121234567') === '+989121234567', 'A valid shared phone was rejected.');
 identityExpect(telegramProductsIdentityNormalizePhone('989121234567') === '+989121234567', 'Telegram contact without plus was rejected.');
@@ -16,6 +32,27 @@ identityExpect(telegramProductsIdentityNormalizePhone('+447911123456') === '', '
 identityExpect(telegramProductsIdentityNormalizePhone('09121234567') === '', 'Local phone without +98 was accepted.');
 identityExpect(telegramProductsIdentityNormalizePhone('abc123') === '', 'Invalid phone was accepted.');
 identityExpect(telegramProductsIdentityModeLabel('users') === 'احراز فقط مخصوص کاربران ایرانی', 'Users-only mode label is missing.');
+$contactKeyboard = json_decode(telegramProductsIdentityStepKeyboard(true), true);
+$otherKeyboard = json_decode(telegramProductsIdentityStepKeyboard(), true);
+identityExpect(!empty($contactKeyboard['keyboard'][0][0]['request_contact']), 'Contact request button is missing.');
+identityExpect(($contactKeyboard['keyboard'][1][0]['text'] ?? '') === 'انصراف', 'Contact cancellation button is missing.');
+identityExpect(($otherKeyboard['keyboard'][0][0]['text'] ?? '') === 'انصراف', 'Step cancellation button is missing.');
+identityExpect(telegramProductsIdentityCancelRequested('انصراف'), 'Cancellation text is not accepted.');
+identityExpect(telegramProductsIdentityCancelRequested('/start'), 'Start command does not exit identity flow.');
+identityExpect(!telegramProductsIdentityCancelRequested('علی رضایی'), 'Valid input was treated as cancellation.');
+foreach (['name', 'contact', 'national', 'photo'] as $stage) {
+    $from_id = '123';
+    $datain = '';
+    $text = 'انصراف';
+    $user = ['step' => 'tgp_identity_' . $stage . '_7', 'Processing_value' => 'value'];
+    $keyboard = '{"keyboard":[]}';
+    $identitySentMessages = [];
+    $identityStepWrites = [];
+    identityExpect(telegramProductsIdentityHandleUser(), 'Cancellation was not handled in ' . $stage . '.');
+    identityExpect($user['step'] === 'home', 'Identity step was not cleared in ' . $stage . '.');
+    identityExpect(count($identitySentMessages) === 2, 'Main keyboard was not restored in ' . $stage . '.');
+    identityExpect(count($identityStepWrites) === 2, 'Cancellation unexpectedly touched identity storage.');
+}
 identityExpect(telegramProductsIdentityModeForAgent('users', 'f') === 'phone', 'Ordinary users must verify phone.');
 identityExpect(telegramProductsIdentityModeForAgent('users', 'n') === 'none', 'Representatives should be exempt.');
 identityExpect(telegramProductsIdentityNationalIdValid('1234567891'), 'Valid national ID checksum was rejected.');
