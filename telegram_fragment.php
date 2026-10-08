@@ -1390,12 +1390,13 @@ function telegramFragmentAdminHandleRequest()
         virtualServicesAdminReply('<b>احراز هویت خرید خودکار</b>' . "\n\nوضعیت فعلی: " . telegramProductsIdentityModeLabel(telegramFragmentSetting('auth_mode', 'none')), [
             [['text' => 'بدون احراز', 'callback_data' => 'vsa_fg_identity_set_none']],
             [['text' => 'فقط شماره', 'callback_data' => 'vsa_fg_identity_set_phone']],
+            [['text' => 'احراز فقط مخصوص کاربران ایرانی', 'callback_data' => 'vsa_fg_identity_set_users']],
             [['text' => 'احراز کامل + تأیید مدیر', 'callback_data' => 'vsa_fg_identity_set_full']],
             [['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']],
         ]);
         return true;
     }
-    if (preg_match('/^vsa_fg_identity_set_(none|phone|full)$/', $datain, $m)) {
+    if (preg_match('/^vsa_fg_identity_set_(none|phone|users|full)$/', $datain, $m)) {
         telegramFragmentSetSetting('auth_mode', $m[1]);
         telegramFragmentAdminHome();
         return true;

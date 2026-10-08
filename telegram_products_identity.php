@@ -2,13 +2,14 @@
 
 function telegramProductsIdentityModeLabel($mode)
 {
-    return ['none' => 'بدون احراز', 'phone' => 'تأیید شماره', 'full' => 'احراز کامل با تأیید مدیر'][$mode] ?? 'بدون احراز';
+    return ['none' => 'بدون احراز', 'phone' => 'تأیید شماره', 'users' => 'احراز فقط مخصوص کاربران ایرانی', 'full' => 'احراز کامل با تأیید مدیر'][$mode] ?? 'بدون احراز';
 }
 
 function telegramProductsIdentityNormalizePhone($value)
 {
     $phone = preg_replace('/[\s()\-]/', '', (string) $value);
-    return preg_match('/^\+?[0-9]{10,15}$/', $phone) ? $phone : '';
+    if (preg_match('/^989[0-9]{9}$/', $phone)) $phone = '+' . $phone;
+    return preg_match('/^\+989[0-9]{9}$/', $phone) ? $phone : '';
 }
 
 function telegramProductsIdentityNationalIdValid($value)
@@ -29,11 +30,27 @@ function telegramProductsIdentityGet($userId, $lock = false)
     return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
 }
 
-function telegramProductsIdentitySatisfied($mode, $identity)
+function telegramProductsIdentityModeForAgent($mode, $agent)
 {
+    return $mode === 'users' ? ((string) $agent === 'f' ? 'phone' : 'none') : $mode;
+}
+
+function telegramProductsIdentityEffectiveMode($mode, $userId)
+{
+    global $pdo;
+    if ($mode !== 'users') return $mode;
+    $stmt = $pdo->prepare('SELECT agent FROM user WHERE id=?');
+    $stmt->execute([(string) $userId]);
+    return telegramProductsIdentityModeForAgent($mode, $stmt->fetchColumn() ?: 'f');
+}
+
+function telegramProductsIdentitySatisfied($mode, $identity, $userId = null)
+{
+    global $from_id;
+    $mode = telegramProductsIdentityEffectiveMode($mode, $userId ?? $from_id);
     if ($mode === 'none') return true;
     if (!is_array($identity) || empty($identity['phone_verified_at'])) return false;
-    if ($mode === 'phone') return true;
+    if ($mode === 'phone') return (bool) preg_match('/^\+989[0-9]{9}$/', (string) ($identity['phone'] ?? ''));
     return $mode === 'full' && ($identity['status'] ?? '') === 'approved';
 }
 
@@ -64,10 +81,11 @@ function telegramProductsIdentityStatus($product, $identity = null)
     global $from_id;
     if ($identity === null) $identity = telegramProductsIdentityGet($from_id);
     $mode = $product['auth_mode'] ?? 'none';
+    $effectiveMode = telegramProductsIdentityEffectiveMode($mode, $from_id);
     $isFragment = (string) $product['id'] === 'fg';
     $buyCallback = $isFragment ? 'tgp_fg_home' : 'tgp_buy_' . $product['id'];
     $backCallback = $isFragment ? 'tgp_fg_home' : 'tgp_view_' . $product['id'];
-    $status = !empty($identity['phone_verified_at']) ? 'شماره تأیید شده' : 'شماره تأیید نشده';
+    $status = $effectiveMode === 'none' ? 'نیازی به احراز نیست' : (!empty($identity['phone_verified_at']) ? 'شماره تأیید شده' : 'شماره تأیید نشده');
     if ($mode === 'full' && !empty($identity['phone_verified_at'])) {
         $status = ['pending' => 'در انتظار بررسی مدیر', 'approved' => 'تأیید شده', 'rejected' => 'رد شده؛ امکان ثبت دوباره دارید'][$identity['status'] ?? ''] ?? 'اطلاعات کامل ثبت نشده';
     }
@@ -82,10 +100,9 @@ function telegramProductsIdentityStatus($product, $identity = null)
     } elseif ($mode === 'full' && ($identity['status'] ?? '') === 'pending') {
         $text .= 'پس از بررسی مدیر، نتیجه برای شما ارسال می‌شود. تا آن زمان مبلغی کسر نخواهد شد.';
     } else {
-        $text .= $mode === 'phone' ? 'برای ادامه، شماره خود را از دکمه اشتراک مخاطب تأیید کنید.' : 'برای ادامه، شماره، نام و تصویر مدرک هویتی شما توسط مدیر بررسی می‌شود. می‌توانید اطلاعات ثبت‌شده را از همین بخش حذف کنید.';
+        $text .= $effectiveMode === 'phone' ? 'برای ادامه، شماره +98 متعلق به همین حساب را با دکمه اشتراک مخاطب تأیید کنید.' : 'برای ادامه، نام، شماره +98، کد ملی و تصویر مدرک هویتی را به ترتیب ثبت کنید. نتیجه پس از بررسی مدیر اعلام می‌شود.';
         $rows[] = [telegramProductsActionButton('شروع احراز هویت', 'tgp_identity_start_' . $product['id'], 'primary', 'action')];
     }
-    if ($identity) $rows[] = [telegramProductsActionButton('حذف اطلاعات احراز', 'tgp_identity_delete_' . $product['id'], 'danger', 'navigation')];
     $rows[] = [telegramProductsActionButton('بازگشت', $backCallback, 'danger', 'navigation')];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
@@ -94,7 +111,7 @@ function telegramProductsIdentityGate(array $product)
 {
     global $from_id;
     $mode = $product['auth_mode'] ?? 'none';
-    if ($mode === 'none' || telegramProductsIdentitySatisfied($mode, telegramProductsIdentityGet($from_id))) return true;
+    if (telegramProductsIdentityEffectiveMode($mode, $from_id) === 'none' || telegramProductsIdentitySatisfied($mode, telegramProductsIdentityGet($from_id))) return true;
     telegramProductsIdentityStatus($product);
     return false;
 }
@@ -106,7 +123,7 @@ function telegramProductsIdentityAskContact($productId)
     step('tgp_identity_contact_' . $key, $from_id);
     $user['step'] = 'tgp_identity_contact_' . $key;
     $keyboard = ['keyboard' => [[['text' => 'ارسال شماره من', 'request_contact' => true]]], 'resize_keyboard' => true, 'one_time_keyboard' => true];
-    sendmessage($from_id, "<b>تأیید شماره</b>\n\nدکمه «ارسال شماره من» را بزنید. شماره تایپی یا مخاطب شخص دیگر پذیرفته نمی‌شود.", json_encode($keyboard, JSON_UNESCAPED_UNICODE), 'HTML');
+    sendmessage($from_id, "<b>تأیید شماره</b>\n\nدکمه «ارسال شماره من» را بزنید. فقط شماره +98 متعلق به همین حساب تلگرام پذیرفته می‌شود؛ شماره تایپی و مخاطب شخص دیگر پذیرفته نیست.", json_encode($keyboard, JSON_UNESCAPED_UNICODE), 'HTML');
 }
 
 function telegramProductsIdentityHandleUser()
@@ -115,63 +132,70 @@ function telegramProductsIdentityHandleUser()
     if (preg_match('/^tgp_identity_(start|delete|deleteconfirm)_(fg|\d+)$/', (string) $datain, $match)) {
         $product = telegramProductsIdentityProduct($match[2]);
         if (!$product) { telegramProductsReply('این پلن دیگر در دسترس نیست.', null); return true; }
-        if ($match[1] === 'delete') {
-            telegramProductsReply("<b>حذف اطلاعات احراز هویت</b>\n\nاطلاعات از پایگاه داده ربات حذف می‌شود و برای خرید پلن‌های نیازمند احراز باید دوباره مراحل را انجام دهید. پیام‌هایی که قبلاً در چت تلگرام ارسال شده‌اند ممکن است باقی بمانند.", json_encode(['inline_keyboard' => [[telegramProductsActionButton('بله، حذف شود', 'tgp_identity_deleteconfirm_' . $product['id'], 'danger', 'navigation')], [telegramProductsActionButton('انصراف', 'tgp_identity_start_' . $product['id'], 'primary', 'action')]]], JSON_UNESCAPED_UNICODE));
-            return true;
-        }
-        if ($match[1] === 'deleteconfirm') {
-            $pdo->prepare('DELETE FROM telegram_product_identity WHERE user_id=?')->execute([(string) $from_id]);
-            telegramProductsIdentityClearStep();
-            telegramProductsIdentityStatus($product, []);
-            return true;
-        }
+        if ($match[1] !== 'start') { telegramProductsReply('حذف احراز هویت فقط توسط مدیر امکان‌پذیر است.', null); return true; }
         $identity = telegramProductsIdentityGet($from_id);
-        if (telegramProductsIdentitySatisfied($product['auth_mode'], $identity) || ($product['auth_mode'] === 'full' && ($identity['status'] ?? '') === 'pending')) {
+        $mode = telegramProductsIdentityEffectiveMode($product['auth_mode'], $from_id);
+        if (($identity['status'] ?? '') === 'approved' || telegramProductsIdentitySatisfied($product['auth_mode'], $identity) || ($mode === 'full' && ($identity['status'] ?? '') === 'pending')) {
             telegramProductsIdentityStatus($product, $identity);
             return true;
         }
         if ($Chat_type !== 'private') { telegramProductsReply('احراز هویت فقط در گفت‌وگوی خصوصی با ربات انجام می‌شود.', null); return true; }
-        if (empty($identity['phone_verified_at'])) telegramProductsIdentityAskContact($product['id']);
-        else {
+        if ($mode === 'full') {
             step('tgp_identity_name_' . $product['id'], $from_id);
             $user['step'] = 'tgp_identity_name_' . $product['id'];
             telegramProductsReply("<b>نام و نام خانوادگی</b>\n\nنام قانونی خود را مطابق مدرک هویتی ارسال کنید.", null, false);
-        }
+        } else telegramProductsIdentityAskContact($product['id']);
         return true;
     }
 
     $step = (string) ($user['step'] ?? '');
     if (!preg_match('/^tgp_identity_(contact|name|national|photo)_(fg|\d+)$/', $step, $match) || $datain !== '') return false;
     $product = telegramProductsIdentityProduct($match[2]);
-    if (!$product || ($product['auth_mode'] ?? 'none') === 'none') {
+    $mode = $product ? telegramProductsIdentityEffectiveMode($product['auth_mode'] ?? 'none', $from_id) : 'none';
+    if (!$product || $mode === 'none') {
         telegramProductsIdentityClearStep();
         telegramProductsReply('شرایط احراز این پلن تغییر کرده است. دوباره وارد صفحه پلن شوید.', null, false);
         return true;
     }
     $stage = $match[1];
+    $identity = telegramProductsIdentityGet($from_id);
+    if ($Chat_type !== 'private') {
+        telegramProductsReply('احراز هویت فقط در گفت‌وگوی خصوصی با ربات انجام می‌شود.', null, false);
+        return true;
+    }
+    if (($identity['status'] ?? '') === 'approved' || ($mode === 'full' && ($identity['status'] ?? '') === 'pending')) {
+        telegramProductsIdentityClearStep();
+        telegramProductsIdentityStatus($product, $identity);
+        return true;
+    }
     if ($stage === 'contact') {
         $contact = $update['message']['contact'] ?? null;
         $phone = is_array($contact) && (string) ($contact['user_id'] ?? '') === (string) $from_id
             ? telegramProductsIdentityNormalizePhone($contact['phone_number'] ?? '') : '';
         if ($phone === '') {
-            sendmessage($from_id, 'فقط شماره متعلق به همین حساب تلگرام را با دکمه «ارسال شماره من» بفرستید.', null, 'HTML');
+            sendmessage($from_id, 'فقط شماره +98 متعلق به همین حساب تلگرام را با دکمه «ارسال شماره من» بفرستید.', null, 'HTML');
             return true;
         }
-        $pdo->prepare("INSERT INTO telegram_product_identity (user_id,phone,phone_verified_at,status) VALUES (?,?,NOW(),'none')
-            ON DUPLICATE KEY UPDATE phone=VALUES(phone),phone_verified_at=NOW(),status='none',full_name=NULL,national_id_last4=NULL,document_file_id=NULL,document_kind=NULL,submitted_at=NULL,reviewed_at=NULL,reviewer_id=NULL")
-            ->execute([(string) $from_id, $phone]);
-        sendmessage($from_id, 'شماره شما تأیید شد.', json_encode(['remove_keyboard' => true]), 'HTML');
-        if ($product['auth_mode'] === 'phone') {
+        $pdo->prepare("INSERT IGNORE INTO telegram_product_identity (user_id,status) VALUES (?,'none')")->execute([(string) $from_id]);
+        $savePhone = $pdo->prepare("UPDATE telegram_product_identity SET phone=?,phone_verified_at=NOW() WHERE user_id=? AND status<>'approved'" . ($mode === 'full' ? ' AND full_name IS NOT NULL' : ''));
+        $savePhone->execute([$phone, (string) $from_id]);
+        if ($savePhone->rowCount() !== 1) {
             telegramProductsIdentityClearStep();
             telegramProductsIdentityStatus($product);
             return true;
         }
-        step('tgp_identity_name_' . $product['id'], $from_id);
-        $user['step'] = 'tgp_identity_name_' . $product['id'];
-        telegramProductsReply("<b>نام و نام خانوادگی</b>\n\nنام قانونی خود را مطابق مدرک هویتی ارسال کنید.", null, false);
+        sendmessage($from_id, 'شماره شما تأیید شد.', json_encode(['remove_keyboard' => true]), 'HTML');
+        if ($mode === 'phone') {
+            telegramProductsIdentityClearStep();
+            telegramProductsIdentityStatus($product);
+            return true;
+        }
+        step('tgp_identity_national_' . $product['id'], $from_id);
+        $user['step'] = 'tgp_identity_national_' . $product['id'];
+        telegramProductsReply("<b>کد ملی</b>\n\nکد ملی ۱۰ رقمی خود را مطابق مدرک ارسال کنید. در پایگاه داده ربات فقط چهار رقم آخر آن نگهداری می‌شود.", null, false);
         return true;
     }
-    if ($product['auth_mode'] !== 'full' || empty(telegramProductsIdentityGet($from_id)['phone_verified_at'])) {
+    if ($mode !== 'full' || ($stage !== 'name' && empty($identity['phone_verified_at']))) {
         telegramProductsIdentityClearStep();
         telegramProductsIdentityStatus($product);
         return true;
@@ -182,11 +206,10 @@ function telegramProductsIdentityHandleUser()
             telegramProductsReply('نام و نام خانوادگی را با حروف، بین ۳ تا ۱۰۰ نویسه بفرستید.', null, false);
             return true;
         }
-        $pdo->prepare("UPDATE telegram_product_identity SET full_name=?,status='none',document_file_id=NULL,document_kind=NULL WHERE user_id=?")
+        $pdo->prepare("INSERT IGNORE INTO telegram_product_identity (user_id,status) VALUES (?,'none')")->execute([(string) $from_id]);
+        $pdo->prepare("UPDATE telegram_product_identity SET full_name=?,phone=NULL,phone_verified_at=NULL,national_id_last4=NULL,document_file_id=NULL,document_kind=NULL,status='none',submitted_at=NULL,reviewed_at=NULL,reviewer_id=NULL WHERE user_id=? AND status<>'approved'")
             ->execute([$name, (string) $from_id]);
-        step('tgp_identity_national_' . $product['id'], $from_id);
-        $user['step'] = 'tgp_identity_national_' . $product['id'];
-        telegramProductsReply("<b>کد ملی</b>\n\nکد ملی ۱۰ رقمی خود را مطابق مدرک ارسال کنید. در پایگاه داده ربات فقط چهار رقم آخر آن نگهداری می‌شود.", null, false);
+        telegramProductsIdentityAskContact($product['id']);
         return true;
     }
     if ($stage === 'national') {
@@ -195,7 +218,7 @@ function telegramProductsIdentityHandleUser()
             telegramProductsReply('کد ملی معتبر نیست. یک کد ۱۰ رقمی صحیح بفرستید.', null, false);
             return true;
         }
-        $pdo->prepare('UPDATE telegram_product_identity SET national_id_last4=? WHERE user_id=?')
+        $pdo->prepare("UPDATE telegram_product_identity SET national_id_last4=? WHERE user_id=? AND status<>'approved' AND full_name IS NOT NULL AND phone_verified_at IS NOT NULL")
             ->execute([substr($nationalId, -4), (string) $from_id]);
         $incomingMessageId = (int) ($update['message']['message_id'] ?? 0);
         if ($incomingMessageId > 0) deletemessage($from_id, $incomingMessageId);
@@ -212,7 +235,7 @@ function telegramProductsIdentityHandleUser()
         telegramProductsReply('فقط عکس یا فایل تصویری JPG/PNG تا ۱۰ مگابایت بفرستید.', null, false);
         return true;
     }
-    $save = $pdo->prepare("UPDATE telegram_product_identity SET document_file_id=?,document_kind=?,status='pending',submitted_at=NOW(),reviewed_at=NULL,reviewer_id=NULL WHERE user_id=? AND full_name IS NOT NULL AND national_id_last4 IS NOT NULL");
+    $save = $pdo->prepare("UPDATE telegram_product_identity SET document_file_id=?,document_kind=?,status='pending',submitted_at=NOW(),reviewed_at=NULL,reviewer_id=NULL WHERE user_id=? AND status<>'approved' AND full_name IS NOT NULL AND phone_verified_at IS NOT NULL AND national_id_last4 IS NOT NULL");
     $save->execute([$fileId, is_array($photoItem) ? 'photo' : 'document', (string) $from_id]);
     if ($save->rowCount() !== 1) {
         telegramProductsIdentityClearStep();
@@ -288,13 +311,14 @@ function telegramProductsIdentityHandleAdmin()
         $rows = [
             [['text' => 'بدون احراز', 'callback_data' => 'vsa_identity_set_' . $m[1] . '_none']],
             [['text' => 'فقط شماره', 'callback_data' => 'vsa_identity_set_' . $m[1] . '_phone']],
+            [['text' => 'احراز فقط مخصوص کاربران ایرانی', 'callback_data' => 'vsa_identity_set_' . $m[1] . '_users']],
             [['text' => 'احراز کامل + تأیید مدیر', 'callback_data' => 'vsa_identity_set_' . $m[1] . '_full']],
             [['text' => 'بازگشت', 'callback_data' => 'vsa_product_' . $m[1]]],
         ];
         virtualServicesAdminReply('<b>سطح احراز هویت</b>' . "\n\nپلن: " . telegramProductsEscape($product['title']) . "\nوضعیت فعلی: " . telegramProductsIdentityModeLabel($product['auth_mode']), $rows);
         return true;
     }
-    if (preg_match('/^vsa_identity_set_(\d+)_(none|phone|full)$/', $datain, $m)) {
+    if (preg_match('/^vsa_identity_set_(\d+)_(none|phone|users|full)$/', $datain, $m)) {
         $pdo->prepare('UPDATE telegram_products SET auth_mode=? WHERE id=?')->execute([$m[2], (int) $m[1]]);
         virtualServicesAdminProduct($m[1]);
         return true;
