@@ -78,6 +78,9 @@ $signerSource = file_get_contents(dirname(__DIR__) . '/services/fragment-signer/
 $adminSource = file_get_contents(dirname(__DIR__) . '/admin.php');
 $fragmentSource = file_get_contents(dirname(__DIR__) . '/telegram_fragment.php');
 $virtualAdminSource = file_get_contents(dirname(__DIR__) . '/telegram_products_admin.php');
+expectTrue(str_contains($fragmentSource, 'https://apiv2.nobitex.ir/market/stats?srcCurrency=gram&dstCurrency=rls'), 'Nobitex stats must use the current API host.');
+expectTrue(str_contains($fragmentSource, 'https://apiv2.nobitex.ir/v3/orderbook/GRAMIRT'), 'Nobitex orderbook must use the current API host.');
+expectTrue(!str_contains($fragmentSource, 'https://api.nobitex.ir/'), 'Legacy Nobitex API host is still used for Fragment pricing.');
 expectTrue(substr_count($installer, 'MIRZA_DOCKER_INSTANCE: \${BOT_SLUG}') >= 2, 'Docker app/worker instance identity is missing.');
 expectTrue(str_contains($installer, 'MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787'), 'Docker signer discovery is missing.');
 expectTrue(str_contains($installer, 'fragment-egress:'), 'Isolated signer egress network is missing.');

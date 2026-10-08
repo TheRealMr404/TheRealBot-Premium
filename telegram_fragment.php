@@ -363,7 +363,7 @@ function telegramFragmentNobitexTonRate($force = false)
     $rate = 0.0;
     $marketClosed = false;
     try {
-        $response = HttpClient::send('GET', 'https://api.nobitex.ir/market/stats?srcCurrency=gram&dstCurrency=rls', ['timeout' => 8]);
+        $response = HttpClient::send('GET', 'https://apiv2.nobitex.ir/market/stats?srcCurrency=gram&dstCurrency=rls', ['timeout' => 8]);
         if ((int) $response['status'] >= 200 && (int) $response['status'] < 300) {
             $payload = json_decode((string) $response['body'], true);
             if (is_array($payload)) {
@@ -379,7 +379,7 @@ function telegramFragmentNobitexTonRate($force = false)
     if ($marketClosed) throw new RuntimeException('market_closed|بازار GRAM در نوبیتکس بسته است.');
     if ($rate <= 0) {
         try {
-            $response = HttpClient::send('GET', 'https://api.nobitex.ir/v3/orderbook/GRAMIRT', ['timeout' => 8]);
+            $response = HttpClient::send('GET', 'https://apiv2.nobitex.ir/v3/orderbook/GRAMIRT', ['timeout' => 8]);
             if ((int) $response['status'] >= 200 && (int) $response['status'] < 300) {
                 $payload = json_decode((string) $response['body'], true);
                 if (is_array($payload)) $rate = telegramFragmentExtractNobitexRate($payload, 'irt');
