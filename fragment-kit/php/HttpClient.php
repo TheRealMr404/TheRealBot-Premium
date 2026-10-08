@@ -10,7 +10,15 @@ final class HttpClient
      */
     public static function send(string $method, string $url, array $opt = []): array
     {
-        $timeout = (int) ($opt['timeout'] ?? 20);
+        $method = strtoupper(trim($method));
+        if (!in_array($method, ['GET', 'POST', 'PUT', 'PATCH', 'DELETE', 'HEAD'], true)) {
+            throw new InvalidArgumentException('روش HTTP مجاز نیست.');
+        }
+        $parts = parse_url($url);
+        if (!$parts || !in_array(strtolower((string) ($parts['scheme'] ?? '')), ['http', 'https'], true) || empty($parts['host']) || isset($parts['user']) || isset($parts['pass'])) {
+            throw new InvalidArgumentException('آدرس HTTP معتبر نیست.');
+        }
+        $timeout = max(2, min(120, (int) ($opt['timeout'] ?? 20)));
         $headers = ['Accept: ' . ($opt['accept'] ?? 'application/json')];
         $body = null;
         if (isset($opt['json'])) {
@@ -23,7 +31,10 @@ final class HttpClient
             $body = (string) $opt['raw'];
             if (!empty($opt['contentType'])) $headers[] = 'Content-Type: ' . $opt['contentType'];
         }
-        foreach ($opt['headers'] ?? [] as $h) $headers[] = $h;
+        foreach ($opt['headers'] ?? [] as $h) {
+            if (!is_string($h) || preg_match('/[\r\n]/', $h)) throw new InvalidArgumentException('هدر HTTP معتبر نیست.');
+            $headers[] = $h;
+        }
 
         if (function_exists('curl_init')) {
             $ch = curl_init($url);
@@ -36,7 +47,12 @@ final class HttpClient
                 CURLOPT_CONNECTTIMEOUT => 10,
                 CURLOPT_HTTPHEADER => $headers,
                 CURLOPT_FOLLOWLOCATION => false,
+                CURLOPT_SSL_VERIFYPEER => true,
+                CURLOPT_SSL_VERIFYHOST => 2,
             ]);
+            if (defined('CURLOPT_PROTOCOLS') && defined('CURLPROTO_HTTP') && defined('CURLPROTO_HTTPS')) {
+                curl_setopt($ch, CURLOPT_PROTOCOLS, CURLPROTO_HTTP | CURLPROTO_HTTPS);
+            }
             if ($body !== null) curl_setopt($ch, CURLOPT_POSTFIELDS, $body);
             if (!empty($opt['proxy'])) curl_setopt($ch, CURLOPT_PROXY, (string) $opt['proxy']);   // http://, https://, socks5://, socks5h://
             $res = curl_exec($ch);
@@ -50,13 +66,22 @@ final class HttpClient
             return ['status' => $status, 'body' => (string) $res, 'headers' => $respHeaders];
         }
 
-        $ctx = stream_context_create(['http' => [
-            'method' => $method,
-            'header' => implode("\r\n", $headers) . "\r\n",
-            'content' => $body ?? '',
-            'timeout' => $timeout,
-            'ignore_errors' => true,
-        ]]);
+        $ctx = stream_context_create([
+            'http' => [
+                'method' => $method,
+                'header' => implode("\r\n", $headers) . "\r\n",
+                'content' => $body ?? '',
+                'timeout' => $timeout,
+                'ignore_errors' => true,
+                'follow_location' => 0,
+                'max_redirects' => 0,
+            ],
+            'ssl' => [
+                'verify_peer' => true,
+                'verify_peer_name' => true,
+                'allow_self_signed' => false,
+            ],
+        ]);
         $res = @file_get_contents($url, false, $ctx);
         if ($res === false) throw new RuntimeException('اتصال برقرار نشد.');
         $status = 0;

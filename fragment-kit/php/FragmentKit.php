@@ -59,7 +59,14 @@ final class Db
     {
         if (!is_dir($dir) && !@mkdir($dir, 0700, true) && !is_dir($dir)) throw new RuntimeException("پوشه‌ی داده ساخته نشد: {$dir}");
         self::$dir = rtrim($dir, '/\\');
-        self::$pdo = new PDO('sqlite:' . self::$dir . '/kit.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+        @chmod(self::$dir, 0700);
+        $oldUmask = umask(0077);
+        try {
+            self::$pdo = new PDO('sqlite:' . self::$dir . '/kit.sqlite', null, null, [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC]);
+        } finally {
+            umask($oldUmask);
+        }
+        @chmod(self::$dir . '/kit.sqlite', 0600);
         self::$pdo->exec('PRAGMA journal_mode = WAL');
         self::$pdo->exec('PRAGMA busy_timeout = 10000');
         self::$pdo->exec('CREATE TABLE IF NOT EXISTS fragment_reqs (

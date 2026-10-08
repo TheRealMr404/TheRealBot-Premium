@@ -1371,7 +1371,7 @@ function telegramProductsAdminPanelHandleRequest()
                 'show_alert' => true,
             ]);
         }
-        sendmessage($from_id, "خطایی در مدیریت خدمات مجازی رخ داد.\n\n<code>" . telegramProductsEscape($e->getMessage()) . '</code>', null, 'HTML');
+        sendmessage($from_id, "<b>انجام عملیات ممکن نشد</b>\n\nجزئیات فنی در لاگ امن سرور ثبت شد. لطفاً دوباره تلاش کنید.", null, 'HTML');
         return true;
     }
 

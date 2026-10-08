@@ -174,6 +174,86 @@ function telegramFragmentEscape($value)
     return htmlspecialchars((string) $value, ENT_QUOTES | ENT_SUBSTITUTE, 'UTF-8');
 }
 
+function telegramFragmentErrorCode($error)
+{
+    if (is_object($error) && property_exists($error, 'errCode')) {
+        return preg_replace('/[^a-z0-9_\-]/', '', strtolower((string) $error->errCode));
+    }
+    $message = (string) ($error instanceof Throwable ? $error->getMessage() : $error);
+    if (preg_match('/^([a-z0-9_\-]{2,40})\|/i', $message, $match)) {
+        return strtolower($match[1]);
+    }
+    return '';
+}
+
+function telegramFragmentSafeReason($error)
+{
+    $code = telegramFragmentErrorCode($error);
+    $message = mb_strtolower((string) ($error instanceof Throwable ? $error->getMessage() : $error), 'UTF-8');
+    $reasons = [
+        'invalid_username' => 'نام کاربری گیرنده معتبر نیست.',
+        'user_not_found' => 'حساب تلگرام گیرنده پیدا نشد؛ نام کاربری را بررسی کنید.',
+        'already_premium' => 'حساب گیرنده در حال حاضر اشتراک پریمیوم فعال دارد.',
+        'invalid_quantity' => 'تعداد استارز انتخاب‌شده معتبر نیست.',
+        'invalid_months' => 'مدت اشتراک پریمیوم معتبر نیست.',
+        'rate_limit' => 'Fragment موقتاً درخواست‌های زیادی دریافت کرده است؛ سفارش دوباره بررسی می‌شود.',
+        'session_expired' => 'اتصال Fragment نیازمند تمدید نشست است.',
+        'need_verify' => 'اتصال Fragment نیازمند تأیید دوباره است.',
+        'login_failed' => 'ورود خودکار Fragment کامل نشد.',
+        'blocked' => 'دسترسی سرور به Fragment موقتاً محدود شده است.',
+        'signer_down' => 'سرویس پردازش تراکنش موقتاً در دسترس نیست.',
+        'signer_auth' => 'ارتباط امن سرویس پردازش نیازمند بازبینی است.',
+        'signer_missing' => 'سرویس پردازش تراکنش هنوز آماده نشده است.',
+        'signer_error' => 'سرویس پردازش تراکنش پاسخ معتبر نداد.',
+        'insecure_signer' => 'مسیر امن سرویس پردازش تکمیل نشده است.',
+        'daily_limit' => 'سقف خرید روزانه کیف پول TON تکمیل شده است.',
+        'amount_mismatch' => 'مبلغ اعلام‌شده با تراکنش یکسان نبود و خرید برای امنیت متوقف شد.',
+        'insufficient_usdt' => 'موجودی کیف پول پرداخت برای این سفارش کافی نیست.',
+        'dry_run' => 'فروش خودکار هنوز در حالت آزمایشی است.',
+        'confirm_pending' => 'تراکنش ارسال شده و هنوز در انتظار تأیید شبکه است.',
+        'tx_failed' => 'تراکنش در شبکه تأیید نشد.',
+        'page_changed' => 'ارتباط با Fragment نیازمند بازبینی است.',
+        'bad_response' => 'پاسخ معتبر از Fragment دریافت نشد؛ سفارش دوباره بررسی می‌شود.',
+        'bad_request' => 'Fragment درخواست خرید را نپذیرفت.',
+        'fragment_error' => 'Fragment نتوانست درخواست خرید را پردازش کند.',
+        'temporary_error' => 'پردازش خودکار سفارش در این لحظه کامل نشد.',
+        'unavailable' => 'Fragment موقتاً در دسترس نیست.',
+        'network' => 'ارتباط با Fragment موقتاً برقرار نشد.',
+    ];
+    if (isset($reasons[$code])) return $reasons[$code];
+    if (preg_match('/already.*premium|پریمیوم.*(فعال|دارد)/u', $message)) return $reasons['already_premium'];
+    if (preg_match('/not found|پیدا نشد|username|recipient|گیرنده/u', $message)) return $reasons['user_not_found'];
+    if (preg_match('/موجودی|balance|insufficient/u', $message)) return 'موجودی کیف پول پرداخت برای این سفارش کافی نیست.';
+    if (preg_match('/سقف|limit|محدود/u', $message)) return 'یکی از محدودیت‌های ایمنی خرید تکمیل شده است.';
+    if (preg_match('/سرویس.*(پردازش|امضا)|signer/u', $message)) return 'سرویس پردازش تراکنش موقتاً در دسترس نیست.';
+    return 'پردازش خودکار سفارش در این لحظه کامل نشد.';
+}
+
+function telegramFragmentStoredError($error)
+{
+    $code = telegramFragmentErrorCode($error) ?: 'temporary_error';
+    return mb_substr($code . '|' . telegramFragmentSafeReason($error), 0, 500);
+}
+
+function telegramFragmentLogFailure($context, $error, $orderId = null)
+{
+    $raw = (string) ($error instanceof Throwable ? $error->getMessage() : $error);
+    $raw = preg_replace('/(authorization:\s*bearer|bearer|token|api[_-]?key|cookie|mnemonic)\s*[=:]\s*[^\s&]+/iu', '$1=***', $raw);
+    error_log('Fragment ' . $context . ($orderId !== null ? ' #' . (int) $orderId : '') . ': ' . mb_substr($raw, 0, 1000));
+}
+
+function telegramFragmentFailureCard($reason, $orderId = null, $refunded = false, $pending = false)
+{
+    $title = $pending ? 'سفارش نیازمند بررسی است' : 'خرید تکمیل نشد';
+    $text = '<b>' . $title . "</b>\n\n<blockquote><b>دلیل:</b> " . telegramFragmentEscape($reason);
+    if ($orderId !== null) $text .= "\n<b>شماره پیگیری:</b> <code>#" . (int) $orderId . '</code>';
+    $text .= '</blockquote>';
+    if ($refunded) $text .= "\n\nمبلغ کامل به کیف پول شما بازگشت داده شد.";
+    elseif ($pending) $text .= "\n\nسفارش محفوظ است و بدون پرداخت دوباره بررسی می‌شود.";
+    else $text .= "\n\nمبلغی از کیف پول شما کسر نشد.";
+    return $text;
+}
+
 function telegramFragmentMoney($value)
 {
     return number_format((int) $value) . ' تومان';
@@ -224,9 +304,9 @@ function telegramFragmentShowHome()
         [['text' => '📦 سفارش‌های من', 'callback_data' => 'tgp_fg_orders']],
         [['text' => '🔙 بازگشت', 'callback_data' => 'tgp_home', 'style' => 'danger']],
     ];
-    $text = "💎 <b>استارز و پریمیوم خودکار</b> ⭐\n\n";
-    $text .= "<blockquote>⚡️ تحویل خودکار و سریع\n🔒 پرداخت امن از کیف پول ربات\n✅ بدون نیاز به ورود به حساب شما</blockquote>\n\n";
-    $text .= 'سرویس موردنظر را انتخاب کنید 👇';
+    $text = "<b>استارز و پریمیوم خودکار</b>\n\n";
+    $text .= "<blockquote>تحویل خودکار پس از پرداخت\nپرداخت مستقیم از کیف پول ربات\nبدون نیاز به ورود به حساب کاربر</blockquote>\n\n";
+    $text .= 'سرویس موردنظر را انتخاب کنید.';
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
@@ -258,7 +338,7 @@ function telegramFragmentShowProduct($id)
     $kindText = $product['kind'] === 'stars'
         ? '<b>تعداد استارز:</b> ' . (int) $product['amount']
         : '<b>مدت اشتراک:</b> ' . (int) $product['amount'] . ' ماه';
-    $text = '<b>' . telegramFragmentEscape($product['title']) . "</b>\n\n{$kindText}\n<b>مبلغ:</b> " . telegramFragmentMoney($product['price']);
+    $text = "<b>جزئیات پلن</b>\n\n<blockquote><b>محصول:</b> " . telegramFragmentEscape($product['title']) . "\n{$kindText}\n<b>مبلغ:</b> " . telegramFragmentMoney($product['price']) . '</blockquote>';
     $rows = [
         [['text' => '🛒 ادامه خرید', 'callback_data' => 'tgp_fg_buy_' . $product['id'], 'style' => 'success']],
         [['text' => '🔙 بازگشت', 'callback_data' => 'tgp_fg_kind_' . $product['kind']]],
@@ -296,12 +376,12 @@ function telegramFragmentShowCheckout($orderId)
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$order) return;
     $detail = $order['kind'] === 'stars' ? (int) $order['product_amount'] . ' استارز' : (int) $order['product_amount'] . ' ماه پریمیوم';
-    $text = "<b>فاکتور خرید خودکار</b>\n\n";
+    $text = "<b>فاکتور خرید خودکار</b>\n\n<blockquote>";
     $text .= '<b>محصول:</b> ' . telegramFragmentEscape($order['product_title']) . "\n";
     $text .= '<b>پلن:</b> ' . $detail . "\n";
     $text .= '<b>گیرنده:</b> @' . telegramFragmentEscape($order['recipient']) . "\n";
-    $text .= '<b>مبلغ:</b> ' . telegramFragmentMoney($order['price']) . "\n\n";
-    $text .= 'نام کاربری را دقیق بررسی کنید؛ سفارش انجام‌شده قابل برگشت نیست.';
+    $text .= '<b>مبلغ:</b> ' . telegramFragmentMoney($order['price']) . "\n<b>روش تحویل:</b> خودکار</blockquote>\n\n";
+    $text .= 'نام کاربری گیرنده را دقیق بررسی کنید؛ خرید تکمیل‌شده قابل برگشت نیست.';
     $rows = [
         [['text' => '✅ تأیید و پرداخت', 'callback_data' => 'tgp_fg_pay_' . $order['id'], 'style' => 'success']],
         [['text' => '❌ انصراف', 'callback_data' => 'tgp_fg_home', 'style' => 'danger']],
@@ -320,6 +400,7 @@ function telegramFragmentPayOrder($orderId)
         telegramProductsReply('بخش خودکار هنوز در حالت آزمایشی است و مبلغی کسر نشد.', null);
         return;
     }
+    $paymentCommitted = false;
     try {
         $pdo->beginTransaction();
         $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=? AND user_id=? FOR UPDATE');
@@ -350,15 +431,24 @@ function telegramFragmentPayOrder($orderId)
         $pdo->prepare('UPDATE user SET Balance=Balance-? WHERE id=?')->execute([(int) $order['price'], (string) $from_id]);
         $pdo->prepare("UPDATE telegram_fragment_orders SET wallet_debited=1,status='queued',paid_at=NOW(),next_attempt_at=NOW(),last_error=NULL WHERE id=?")->execute([$order['id']]);
         $pdo->commit();
+        $paymentCommitted = true;
         if (function_exists('clearSelectCache')) clearSelectCache('user');
-        $text = "پرداخت با موفقیت ثبت شد و سفارش وارد صف خرید Fragment شد.\n\n<b>شماره سفارش:</b> <code>#{$order['id']}</code>";
+        $text = "<b>پرداخت با موفقیت ثبت شد</b>\n\n<blockquote><b>شماره سفارش:</b> <code>#{$order['id']}</code>\n<b>محصول:</b> " . telegramFragmentEscape($order['product_title']) . "\n<b>گیرنده:</b> @" . telegramFragmentEscape($order['recipient']) . "\n<b>مبلغ:</b> " . telegramFragmentMoney($order['price']) . "\n<b>وضعیت:</b> در صف خرید خودکار</blockquote>\n\nنتیجه سفارش پس از پردازش برای شما ارسال می‌شود.";
         $rows = [[['text' => 'مشاهده وضعیت', 'callback_data' => 'tgp_fg_order_' . $order['id'], 'style' => 'primary']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']]];
         telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
         telegramProductsReport('sale', "<b>سفارش خودکار Fragment</b>\n\nسفارش: <code>#{$order['id']}</code>\nکاربر: <code>{$from_id}</code>\nگیرنده: @" . telegramFragmentEscape($order['recipient']) . "\nوضعیت: در صف پردازش");
     } catch (Throwable $e) {
         if ($pdo->inTransaction()) $pdo->rollBack();
-        error_log('Fragment payment error: ' . $e->getMessage());
-        telegramProductsReply('❌ ناموفق', null);
+        telegramFragmentLogFailure('payment', $e, $orderId);
+        $reason = telegramFragmentSafeReason($e);
+        if ($paymentCommitted) {
+            $text = "<b>پرداخت ثبت شده است</b>\n\n<blockquote><b>شماره پیگیری:</b> <code>#" . (int) $orderId . "</code>\n<b>وضعیت:</b> سفارش در صف پردازش خودکار قرار دارد.</blockquote>\n\nبرای این سفارش دوباره پرداخت نکنید.";
+            $rows = [[['text' => 'مشاهده وضعیت', 'callback_data' => 'tgp_fg_order_' . (int) $orderId, 'style' => 'primary']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']]];
+            telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
+        } else {
+            $rows = [[['text' => 'تلاش دوباره', 'callback_data' => 'tgp_fg_pay_' . (int) $orderId, 'style' => 'primary']], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_home']]];
+            telegramProductsReply(telegramFragmentFailureCard($reason, $orderId, false, false), json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
+        }
     }
 }
 
@@ -391,6 +481,9 @@ function telegramFragmentShowOrder($id)
     $text .= '<b>مبلغ:</b> ' . telegramFragmentMoney($order['price']) . "\n";
     $text .= '<b>وضعیت:</b> ' . telegramFragmentStatusLabel($order['status']);
     if (!empty($order['tx_hash'])) $text .= "\n<b>شناسه تراکنش:</b> <code>" . telegramFragmentEscape($order['tx_hash']) . '</code>';
+    if (in_array($order['status'], ['failed', 'review'], true) && !empty($order['last_error'])) {
+        $text .= "\n<b>دلیل:</b> " . telegramFragmentEscape(telegramFragmentSafeReason($order['last_error']));
+    }
     if ($order['status'] === 'failed' && (int) $order['wallet_refunded'] === 1) $text .= "\n\nمبلغ کامل به کیف پول برگشت داده شد.";
     $rows = [[['text' => 'تازه‌سازی', 'callback_data' => 'tgp_fg_order_' . $order['id']]], [['text' => 'بازگشت', 'callback_data' => 'tgp_fg_orders']]];
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
@@ -411,14 +504,14 @@ function telegramFragmentShowOrders()
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
-/** نقطه‌ی ورود سمت کاربر: هر خطای داخلی فقط در لاگ می‌ماند و به کاربر فقط «ناموفق» نشان داده می‌شود */
+/** نقطه‌ی ورود سمت کاربر: جزئیات داخلی فقط در لاگ امن می‌ماند. */
 function telegramFragmentHandleUserRequest()
 {
     try {
         return telegramFragmentHandleUserRequestInner();
     } catch (Throwable $e) {
-        error_log('Fragment user flow error: ' . $e->getMessage());
-        try { telegramProductsReply('❌ ناموفق', null); } catch (Throwable $ignored) { }
+        telegramFragmentLogFailure('user flow', $e);
+        try { telegramProductsReply(telegramFragmentFailureCard(telegramFragmentSafeReason($e), null, false, false), null); } catch (Throwable $ignored) { }
         return true;
     }
 }
@@ -490,12 +583,13 @@ function telegramFragmentNotifyOrder(array $order, $status, $message = '')
 {
     global $pdo;
     if (($order['notified_status'] ?? '') === $status) return;
+    $reason = telegramFragmentSafeReason($message !== '' ? $message : ($order['last_error'] ?? ''));
     $text = $status === 'completed'
-        ? "✅ <b>سفارش با موفقیت تکمیل شد</b>\n\nسفارش <code>#{$order['id']}</code> برای @" . telegramFragmentEscape($order['recipient']) . ' انجام شد.'
-        : "❌ <b>ناموفق</b>\n\nسفارش <code>#{$order['id']}</code> انجام نشد." . ((int) ($order['wallet_refunded'] ?? 0) === 1 ? "\nمبلغ کامل به کیف پول شما برگشت." : "\nدر حال بررسی توسط پشتیبانی هستیم.");
+        ? "<b>سفارش با موفقیت تکمیل شد</b>\n\n<blockquote><b>شماره سفارش:</b> <code>#{$order['id']}</code>\n<b>محصول:</b> " . telegramFragmentEscape($order['product_title']) . "\n<b>گیرنده:</b> @" . telegramFragmentEscape($order['recipient']) . "\n<b>وضعیت:</b> تحویل‌شده</blockquote>"
+        : telegramFragmentFailureCard($reason, $order['id'], (int) ($order['wallet_refunded'] ?? 0) === 1, $status === 'review');
     sendmessage($order['user_id'], $text, json_encode(['inline_keyboard' => [[['text' => 'مشاهده سفارش', 'callback_data' => 'tgp_fg_order_' . $order['id']]]]], JSON_UNESCAPED_UNICODE), 'HTML');
     $pdo->prepare('UPDATE telegram_fragment_orders SET notified_status=? WHERE id=?')->execute([$status, $order['id']]);
-    telegramProductsReport($status === 'completed' ? 'sale' : 'error', "<b>گزارش Fragment</b>\n\nسفارش: <code>#{$order['id']}</code>\nکاربر: <code>" . telegramFragmentEscape($order['user_id']) . "</code>\nگیرنده: @" . telegramFragmentEscape($order['recipient']) . "\nوضعیت: " . telegramFragmentStatusLabel($status) . ($message !== '' ? "\nجزئیات: <code>" . telegramFragmentEscape(mb_substr($message, 0, 600)) . '</code>' : ''));
+    telegramProductsReport($status === 'completed' ? 'sale' : 'error', "<b>گزارش Fragment</b>\n\nسفارش: <code>#{$order['id']}</code>\nکاربر: <code>" . telegramFragmentEscape($order['user_id']) . "</code>\nگیرنده: @" . telegramFragmentEscape($order['recipient']) . "\nوضعیت: " . telegramFragmentStatusLabel($status) . ($status === 'completed' ? '' : "\nدلیل: " . telegramFragmentEscape($reason)));
 }
 
 function telegramFragmentMaybeBalanceAlert()
@@ -552,26 +646,36 @@ function telegramFragmentProcessPendingOrders($limit = 3)
                     $status = $attempt >= 12 ? 'review' : 'confirm_pending';
                     $delay = min(3600, 60 * max(1, $attempt));
                     $stmt = $pdo->prepare('UPDATE telegram_fragment_orders SET status=?,last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL ? SECOND) WHERE id=?');
-                    $stmt->execute([$status, mb_substr($e->getMessage(), 0, 1000), $delay, $order['id']]);
+                    $storedError = telegramFragmentStoredError($e);
+                    $stmt->execute([$status, $storedError, $delay, $order['id']]);
                     if ($status === 'review') {
                         $order['wallet_refunded'] = 0;
-                        telegramFragmentNotifyOrder($order, 'review', $e->getMessage());
+                        $order['last_error'] = $storedError;
+                        telegramFragmentNotifyOrder($order, 'review', $storedError);
                     }
                 } else {
-                    telegramFragmentRefundOrder($order['id'], $e->getMessage());
+                    telegramFragmentRefundOrder($order['id'], telegramFragmentStoredError($e));
                     $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=?');
                     $stmt->execute([$order['id']]);
-                    telegramFragmentNotifyOrder($stmt->fetch(PDO::FETCH_ASSOC), 'failed', $e->getMessage());
+                    telegramFragmentNotifyOrder($stmt->fetch(PDO::FETCH_ASSOC), 'failed', telegramFragmentStoredError($e));
                 }
             } catch (InvalidArgumentException $e) {
-                telegramFragmentRefundOrder($order['id'], $e->getMessage());
+                telegramFragmentRefundOrder($order['id'], telegramFragmentStoredError($e));
                 $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=?');
                 $stmt->execute([$order['id']]);
-                telegramFragmentNotifyOrder($stmt->fetch(PDO::FETCH_ASSOC), 'failed', $e->getMessage());
+                telegramFragmentNotifyOrder($stmt->fetch(PDO::FETCH_ASSOC), 'failed', telegramFragmentStoredError($e));
             } catch (Throwable $e) {
-                $stmt = $pdo->prepare("UPDATE telegram_fragment_orders SET status='confirm_pending',last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL 5 MINUTE) WHERE id=?");
-                $stmt->execute([mb_substr($e->getMessage(), 0, 1000), $order['id']]);
-                error_log('Fragment worker uncertain error #' . $order['id'] . ': ' . $e->getMessage());
+                $attempt = (int) $order['attempt_count'] + 1;
+                $status = $attempt >= 12 ? 'review' : 'confirm_pending';
+                $storedError = telegramFragmentStoredError($e);
+                $stmt = $pdo->prepare("UPDATE telegram_fragment_orders SET status=?,last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL 5 MINUTE) WHERE id=?");
+                $stmt->execute([$status, $storedError, $order['id']]);
+                telegramFragmentLogFailure('worker uncertain', $e, $order['id']);
+                if ($status === 'review') {
+                    $order['last_error'] = $storedError;
+                    $order['wallet_refunded'] = 0;
+                    telegramFragmentNotifyOrder($order, 'review', $storedError);
+                }
             }
             $processed++;
         }
@@ -584,7 +688,7 @@ function telegramFragmentProcessPendingOrders($limit = 3)
 
 function telegramFragmentAdminHomeButton(array &$rows)
 {
-    array_unshift($rows, [['text' => '💎 پریمیوم و استارز خودکار ⭐', 'callback_data' => 'vsa_fg_home', 'style' => 'primary']]);
+    array_unshift($rows, [['text' => 'پریمیوم و استارز خودکار', 'callback_data' => 'vsa_fg_home', 'style' => 'primary']]);
 }
 
 function telegramFragmentMasked($value)
@@ -613,14 +717,15 @@ function telegramFragmentStatusSnapshot($live = false)
             $status = FragmentKit::status();
             $snapshot['session'] = !empty($status['session']['loggedIn']);
             $snapshot['balance'] = isset($status['wallet']['balance']) ? (float) $status['wallet']['balance'] : null;
-            if (!empty($status['errors'])) $snapshot['error'] = implode(' | ', array_values($status['errors']));
+            if (!empty($status['errors'])) $snapshot['error'] = telegramFragmentSafeReason(reset($status['errors']));
         } else {
             $snapshot['session'] = telegramFragmentSetting('last_session_ok', '0') === '1';
             $lastBalance = telegramFragmentSetting('last_balance', '');
             $snapshot['balance'] = $lastBalance === '' ? null : (float) $lastBalance;
         }
     } catch (Throwable $e) {
-        $snapshot['error'] = $e->getMessage();
+        telegramFragmentLogFailure('status snapshot', $e);
+        $snapshot['error'] = telegramFragmentSafeReason($e);
     }
     return $snapshot;
 }
@@ -637,7 +742,7 @@ function telegramFragmentAdminHome()
     $plans = (int) $pdo->query('SELECT COUNT(*) FROM telegram_fragment_products')->fetchColumn();
     $queue = (int) $pdo->query("SELECT COUNT(*) FROM telegram_fragment_orders WHERE status IN ('queued','processing','confirm_pending','review')")->fetchColumn();
     $last = telegramFragmentSetting('last_check', 'هنوز انجام نشده');
-    $text = "💎 <b>اتصال Fragment</b>\n\n";
+    $text = "<b>اتصال Fragment</b>\n\n";
     $text .= "پکیج‌های پریمیوم و استارز پس از پرداخت کاربر، به‌صورت خودکار از Fragment و با کیف پول TON خریداری می‌شوند.\n\n<blockquote>";
     $text .= 'فروش خودکار: ' . ($enabled ? '✅ روشن' : '❌ خاموش') . "\n";
     $text .= 'حالت پردازش: ' . ($dryRun ? '🧪 آزمایشی' : '✅ واقعی') . "\n";
@@ -652,16 +757,7 @@ function telegramFragmentAdminHome()
     $text .= "پلن‌ها: <code>{$plans}</code> | سفارش‌های باز: <code>{$queue}</code>\n";
     $text .= 'آخرین بررسی: ' . telegramFragmentEscape($last) . '</blockquote>';
     if (!$status['signer'] && $status['error'] !== '') {
-        $dockerInstance = preg_replace('/[^a-z0-9-]/', '', strtolower((string) getenv('MIRZA_DOCKER_INSTANCE')));
-        $repairCommand = $dockerInstance !== ''
-            ? 'sudo mirza bot-repair --id ' . $dockerInstance
-            : 'sudo bash ' . __DIR__ . '/services/fragment-signer/install-service.sh';
-        $text .= "
-
-⚠️ <b>علت قطعی سرویس امضا:</b>
-<code>" . telegramFragmentEscape(mb_substr($status['error'], 0, 300)) . "</code>
-
-راه‌حل (روی سرور، یک‌بار): <code>" . telegramFragmentEscape($repairCommand) . "</code>";
+        $text .= "\n\n<b>وضعیت بررسی:</b> " . telegramFragmentEscape($status['error']);
     }
     $rows = [
         [['text' => 'فروش خودکار: ' . ($enabled ? 'روشن' : 'خاموش'), 'callback_data' => 'vsa_fg_toggle', 'style' => $enabled ? 'success' : 'danger']],
@@ -711,7 +807,7 @@ function telegramFragmentAdminCheck($login = false)
         $text .= "\nنشست Fragment: " . (!empty($status['session']['loggedIn']) ? 'فعال' : 'غیرفعال');
         $text .= "\nموجودی: <code>{$balance} TON</code>";
         if ($low > 0 && $balance < $low) $text .= "\n\n⚠️ موجودی از حد هشدار کمتر است.";
-        if (!empty($status['errors'])) $text .= "\n\n<code>" . telegramFragmentEscape(implode(' | ', array_values($status['errors']))) . '</code>';
+        if (!empty($status['errors'])) $text .= "\n\n<b>نتیجه بررسی:</b> " . telegramFragmentEscape(telegramFragmentSafeReason(reset($status['errors'])));
         virtualServicesAdminReply($text, [[['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']]]);
     } catch (Throwable $e) {
         telegramFragmentSetSetting('last_check', date('Y-m-d H:i:s'));
@@ -722,7 +818,8 @@ function telegramFragmentAdminCheck($login = false)
             $rows[] = [['text' => 'روش جایگزین ورود', 'callback_data' => 'vsa_fg_login_fallback']];
         }
         $rows[] = [['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']];
-        virtualServicesAdminReply("<b>اتصال ناموفق بود</b>\n\n<code>" . telegramFragmentEscape($e->getMessage()) . '</code>', $rows);
+        telegramFragmentLogFailure('admin connection check', $e);
+        virtualServicesAdminReply("<b>بررسی اتصال کامل نشد</b>\n\n<b>دلیل:</b> " . telegramFragmentEscape(telegramFragmentSafeReason($e)), $rows);
     }
 }
 
@@ -786,7 +883,7 @@ function telegramFragmentAdminOrder($id)
     $text .= 'محصول: ' . telegramFragmentEscape($order['product_title']) . "\n";
     $text .= 'وضعیت: ' . telegramFragmentStatusLabel($order['status']) . "\n";
     $text .= 'تعداد تلاش: <code>' . (int) $order['attempt_count'] . '</code>';
-    if ($order['last_error']) $text .= "\n\n<b>آخرین خطا:</b>\n<code>" . telegramFragmentEscape(mb_substr($order['last_error'], 0, 900)) . '</code>';
+    if ($order['last_error']) $text .= "\n\n<b>دلیل وضعیت فعلی:</b> " . telegramFragmentEscape(telegramFragmentSafeReason($order['last_error']));
     $rows = [];
     if (in_array($order['status'], ['failed', 'review'], true) && (int) $order['wallet_refunded'] === 0) $rows[] = [['text' => 'ارسال مجدد به صف', 'callback_data' => 'vsa_fg_retry_' . $order['id'], 'style' => 'success']];
     if (in_array($order['status'], ['failed', 'review'], true) && (int) $order['wallet_debited'] === 1 && (int) $order['wallet_refunded'] === 0) {
@@ -891,7 +988,9 @@ function telegramFragmentAdminHandleRequest()
                 virtualServicesAdminClearState(); telegramFragmentAdminHome(); return true;
             }
         } catch (Throwable $e) {
-            virtualServicesAdminReply("<b>ذخیره نشد</b>\n\n<code>" . telegramFragmentEscape($e->getMessage()) . '</code>', [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_home']]]);
+            telegramFragmentLogFailure('admin save', $e);
+            $reason = $e instanceof InvalidArgumentException ? $e->getMessage() : telegramFragmentSafeReason($e);
+            virtualServicesAdminReply("<b>ذخیره نشد</b>\n\n<b>دلیل:</b> " . telegramFragmentEscape($reason), [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_home']]]);
             return true;
         }
     }

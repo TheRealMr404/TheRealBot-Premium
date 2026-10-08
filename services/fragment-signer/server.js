@@ -167,7 +167,7 @@ async function createApp(cfg) {
     const keys = Object.keys(state.byHash);
     if (keys.length > 500) for (const k of keys.slice(0, keys.length - 500)) delete state.byHash[k];
     if (!cfg.stateFile) return;
-    fs.writeFileSync(cfg.stateFile + '.tmp', JSON.stringify(state));
+    fs.writeFileSync(cfg.stateFile + '.tmp', JSON.stringify(state), { mode: 0o600 });
     fs.renameSync(cfg.stateFile + '.tmp', cfg.stateFile);
   };
 
@@ -283,7 +283,9 @@ async function createApp(cfg) {
 
   async function status(hash) {
     needWallet();
-    const rec = state.byHash[String(hash || '').toLowerCase()];
+    hash = String(hash || '').toLowerCase();
+    if (!/^[a-f0-9]{64}$/.test(hash)) return { known: false, included: false, expired: false };
+    const rec = state.byHash[hash];
     if (!rec) return { known: false, included: false, expired: false };
     const cur = await chain.seqno();
     if (cur > rec.seqno && !rec.included) { rec.included = true; persist(); }
@@ -425,7 +427,7 @@ if (require.main === module) {
     const host = env.HOST || '127.0.0.1', port = Number(env.PORT || 8787);
     app.server.listen(port, host, () => {
       console.log(`TON signer روی http://${host}:${port} | ` + (app.wallet ? `ولت: ${app.wallet.address.toString({ urlSafe: true, bounceable: false })}` : 'ولت هنوز تنظیم نشده (از پنل فروشگاه وارد کنید)'));
-      if (generated || !env.SIGNER_TOKEN) console.log(`توکن سرویس (در پنل ← فروش خودکار فرگمنت ← «توکن سرویس امضا» بنویسید): ${token}\n(این توکن در ${tokenFile} هم ذخیره شده است)`);
+      if (generated || !env.SIGNER_TOKEN) console.log(`توکن سرویس در فایل امن ${tokenFile} ساخته یا بارگذاری شد.`);
     });
   })().catch((e) => { console.error('راه‌اندازی ناموفق:', e.message); process.exit(1); });
 }

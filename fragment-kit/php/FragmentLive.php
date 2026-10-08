@@ -91,7 +91,8 @@ final class FragmentLive
         try {
             $r = HttpClient::send($method, $url, $opt);
         } catch (Throwable $e) {
-            throw new FragmentError('network', 'اتصال به فرگمنت برقرار نشد: ' . $e->getMessage(), true);
+            error_log('fragment network: ' . mb_substr($e->getMessage(), 0, 300));
+            throw new FragmentError('network', 'اتصال به Fragment موقتاً برقرار نشد.', true);
         }
         $changed = false;
         foreach ($r['headers'] ?? [] as $line) {
@@ -178,12 +179,12 @@ final class FragmentLive
     {
         $l = strtolower($e);
         return match (true) {
-            str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'not found') => new FragmentError('user_not_found', "گیرنده پیدا نشد: {$e}"),
-            str_contains($l, 'already subscribed') || (str_contains($l, 'already') && str_contains($l, 'premium')) => new FragmentError('already_premium', "این حساب هم‌اکنون پریمیوم دارد: {$e}"),
-            str_contains($l, 'too many') || str_contains($l, 'flood') => new FragmentError('rate_limit', "محدودیت نرخ فرگمنت: {$e}", true),
-            str_contains($l, 'access denied') => new FragmentError('session_expired', "فرگمنت دسترسی را رد کرد (نشست نامعتبر است): {$e}"),
-            str_contains($l, 'bad request') => new FragmentError('bad_request', "فرگمنت درخواست را نپذیرفت (نشست یا شناسه‌ی API نامعتبر): {$e}", true),
-            default => new FragmentError('fragment_error', "فرگمنت: {$e}"),
+            str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'not found') => new FragmentError('user_not_found', 'گیرنده پیدا نشد.'),
+            str_contains($l, 'already subscribed') || (str_contains($l, 'already') && str_contains($l, 'premium')) => new FragmentError('already_premium', 'این حساب هم‌اکنون پریمیوم دارد.'),
+            str_contains($l, 'too many') || str_contains($l, 'flood') => new FragmentError('rate_limit', 'Fragment موقتاً درخواست‌ها را محدود کرده است.', true),
+            str_contains($l, 'access denied') => new FragmentError('session_expired', 'نشست Fragment نیازمند تمدید است.'),
+            str_contains($l, 'bad request') => new FragmentError('bad_request', 'Fragment درخواست را نپذیرفت.', true),
+            default => new FragmentError('fragment_error', 'Fragment نتوانست درخواست را پردازش کند.'),
         };
     }
 
@@ -196,12 +197,14 @@ final class FragmentLive
         try {
             $r = HttpClient::send($method, rtrim((string) $l['signerUrl'], '/') . $path, ['headers' => $headers, 'timeout' => $timeout] + ($payload !== null ? ['json' => $payload] : []));
         } catch (Throwable $e) {
-            throw new FragmentError('signer_down', 'اتصال به سرویس امضای TON برقرار نشد: ' . $e->getMessage(), true);
+            error_log('fragment signer transport: ' . mb_substr($e->getMessage(), 0, 300));
+            throw new FragmentError('signer_down', 'سرویس پردازش تراکنش موقتاً در دسترس نیست.', true);
         }
         $d = json_decode($r['body'], true);
         if ($r['status'] >= 400 || !is_array($d)) {
-            $msg = is_array($d) ? (string) ($d['error'] ?? '') : '';
-            throw new FragmentError(in_array($r['status'], [401, 403], true) ? 'signer_auth' : 'signer_error', 'سرویس امضای TON: ' . ($msg !== '' ? $msg : "HTTP {$r['status']}"), $r['status'] >= 500 || $r['status'] === 503);
+            $code = in_array($r['status'], [401, 403], true) ? 'signer_auth' : 'signer_error';
+            $message = $code === 'signer_auth' ? 'ارتباط امن سرویس پردازش نیازمند بازبینی است.' : 'سرویس پردازش تراکنش پاسخ معتبر نداد.';
+            throw new FragmentError($code, $message, $r['status'] >= 500 || $r['status'] === 503);
         }
         return $d;
     }
@@ -515,7 +518,7 @@ final class FragmentLive
                 self::api($page, (string) $link['confirm_method'], ['account' => $j($info['account'] ?? []), 'device' => $j($info['device'] ?? []), 'boc' => (string) ($sent['boc'] ?? '')] + (array) ($link['confirm_params'] ?? []));
                 self::waitFragmentState($page, $kind);
             } catch (Throwable $e) {
-                error_log('fragment confirm_method: ' . $e->getMessage());
+                error_log('fragment confirm_method failed');
             }
         }
         return ['txHash' => (string) $sent['hash'], 'sent' => true, 'confirmed' => false, 'totalTon' => $tonTotal, 'duplicate' => !empty($sent['duplicate']), 'paymentMethod' => $pm];

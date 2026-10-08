@@ -302,15 +302,15 @@ function telegramProductsCheckout($orderId)
     $wallet = $walletStmt->fetch(PDO::FETCH_ASSOC) ?: ['Balance' => 0, 'agent' => 'f', 'maxbuyagent' => 0];
     $balance = (int) $wallet['Balance'];
     $creditLimit = $wallet['agent'] === 'n2' ? (int) $wallet['maxbuyagent'] : 0;
-    $text = "<b>فاکتور خدمات مجازی</b>\n\n";
-    $text .= telegramProductsSafeCustomText(telegramProductsSetting('checkout_text', 'لطفاً اطلاعات سفارش را بررسی کنید.')) . "\n\n";
-    $text .= '<b>محصول:</b> ' . telegramProductsEscape($order['product_title']) . "\n";
+    $text = "<b>فاکتور خرید خدمات مجازی</b>\n\n";
+    $text .= '<blockquote><b>محصول:</b> ' . telegramProductsEscape($order['product_title']) . "\n";
     $text .= '<b>مبلغ اولیه:</b> ' . telegramProductsMoney($order['original_price'] ?: $order['price']) . "\n";
     if ((int) $order['discount_amount'] > 0) $text .= '<b>تخفیف:</b> -' . telegramProductsMoney($order['discount_amount']) . "\n";
     if ((int) $order['points_used'] > 0) $text .= '<b>امتیاز مصرفی:</b> ' . (int) $order['points_used'] . "\n";
     $text .= '<b>مبلغ قابل پرداخت:</b> ' . telegramProductsMoney($order['price']) . "\n";
-    $text .= '<b>موجودی کیف پول:</b> ' . telegramProductsMoney($balance);
-    if (!empty($order['customer_input'])) $text .= "\n\n<b>اطلاعات سفارش:</b>\n" . telegramProductsFormatCustomerInput($order['customer_input']);
+    $text .= '<b>موجودی کیف پول:</b> ' . telegramProductsMoney($balance) . '</blockquote>';
+    $text .= "\n\n" . telegramProductsSafeCustomText(telegramProductsSetting('checkout_text', 'اطلاعات سفارش را بررسی و پرداخت را تأیید کنید.'));
+    if (!empty($order['customer_input'])) $text .= "\n\n<b>اطلاعات سفارش:</b>\n<blockquote>" . telegramProductsFormatCustomerInput($order['customer_input']) . '</blockquote>';
     $rows = [
         [['text' => empty($order['discount_code']) ? 'ثبت کد تخفیف' : 'تغییر کد تخفیف', 'callback_data' => 'tgp_discount_' . $order['id'], 'style' => 'primary']],
     ];

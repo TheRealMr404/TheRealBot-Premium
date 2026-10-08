@@ -1386,7 +1386,14 @@ ensure_fragment_stack() {
     local dir="$1" slug="$2" compose_file="$dir/compose.yml"
     local override_file="$dir/compose.fragment-migration.yml" merged_file backup_file
     STACK_CHANGED=0
-    grep -qE '^  signer:[[:space:]]*$' "$compose_file" && return 0
+    if grep -qE '^  signer:[[:space:]]*$' "$compose_file"; then
+        if [ -f "$dir/Signer.Dockerfile" ] && ! grep -qE '^USER[[:space:]]+node[[:space:]]*$' "$dir/Signer.Dockerfile"; then
+            sed -i '/^CMD \["node", "server.js"\]/i USER node' "$dir/Signer.Dockerfile"
+            grep -qE '^USER[[:space:]]+node[[:space:]]*$' "$dir/Signer.Dockerfile" || return 1
+            STACK_CHANGED=1
+        fi
+        return 0
+    fi
     [ -s "$dir/app/services/fragment-signer/server.js" ] || return 1
     [ -s "$dir/app/services/fragment-signer/package.json" ] || return 1
 
@@ -1396,6 +1403,7 @@ WORKDIR /srv/signer
 COPY app/services/fragment-signer/package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 COPY app/services/fragment-signer/server.js ./server.js
+USER node
 CMD ["node", "server.js"]
 EOF
 
@@ -1412,6 +1420,7 @@ EOF
 services:
   app:
     environment:
+      MIRZA_DOCKER_INSTANCE: \${BOT_SLUG}
       MIRZA_FRAGMENT_SIGNER_URL: http://signer:8787
       MIRZA_FRAGMENT_DATA_DIR: /var/lib/mirza-fragment/php-data
       SIGNER_TOKEN: \${SIGNER_TOKEN}
@@ -1442,7 +1451,7 @@ services:
         condition: service_healthy
     networks:
       - internal
-      - edge
+      - fragment-egress
   signer:
     image: mirza-$slug-fragment-signer:local
     build:
@@ -1461,13 +1470,16 @@ services:
       - ./fragment-signer-data:/data
     networks:
       - internal
-      - edge
+      - fragment-egress
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 20s
       timeout: 5s
       retries: 10
       start_period: 20s
+networks:
+  fragment-egress:
+    name: mirza-$slug-fragment-egress
 EOF
 
     merged_file=$(mktemp "$dir/compose.merged.XXXXXX.yml") || return 1
@@ -2180,6 +2192,7 @@ WORKDIR /srv/signer
 COPY app/services/fragment-signer/package*.json ./
 RUN npm install --omit=dev --no-audit --no-fund
 COPY app/services/fragment-signer/server.js ./server.js
+USER node
 CMD ["node", "server.js"]
 EOF
 
@@ -2278,7 +2291,7 @@ services:
       - ./fragment-signer-data:/data
     networks:
       - internal
-      - edge
+      - fragment-egress
     healthcheck:
       test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8787/health',r=>process.exit(r.statusCode===200?0:1)).on('error',()=>process.exit(1))"]
       interval: 20s
@@ -2295,6 +2308,8 @@ networks:
     internal: true
   edge:
     name: mirza-$slug-edge
+  fragment-egress:
+    name: mirza-$slug-fragment-egress
 volumes:
   db_data:
     name: mirza-$slug-db-data
@@ -3382,11 +3397,11 @@ EOF
     print_header "Bot Configuration"
     YOUR_BOT_TOKEN="$(state_get BOT_TOKEN)"
     if [ -n "$YOUR_BOT_TOKEN" ]; then
-        echo -e "\e[33m[+] \e[36mBot Token (resumed):\e[0m ${YOUR_BOT_TOKEN:0:10}..."
+        echo -e "\e[33m[+] \e[36mBot Token:\e[0m loaded from the saved installation state"
     else
         if [ -n "$ARG_TOKEN" ]; then
             YOUR_BOT_TOKEN="$ARG_TOKEN"
-            echo -e "\e[33m[+] \e[36mBot Token (from --token):\e[0m ${YOUR_BOT_TOKEN:0:10}..."
+            echo -e "\e[33m[+] \e[36mBot Token:\e[0m received from the command arguments"
         else
             printf "\e[33m[+] \e[36mBot Token: \033[0m"
             read YOUR_BOT_TOKEN
