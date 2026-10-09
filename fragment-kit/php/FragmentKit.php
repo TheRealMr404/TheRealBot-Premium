@@ -231,6 +231,11 @@ final class FragmentKit
             }
         } catch (FragmentError $e) {
             Db::run('UPDATE kit_tx SET status = ?, error = ?, updated_at = ? WHERE idem = ?', [$e->errCode === 'confirm_pending' ? 'pending' : 'failed', mb_substr($e->getMessage(), 0, 500), now_utc(), $idem]);
+            // تراکنشی که تا پایان مهلتش روی شبکه ننشست دیگر هرگز نمی‌نشیند و پولی نرفته است؛ هش قبلی پاک می‌شود
+            // تا تلاش بعدی قیمت تازه بگیرد و دوباره بفرستد (وگرنه سفارش برای همیشه روی همان هش منقضی گیر می‌کند).
+            if ($e->errCode === 'tx_failed') {
+                Db::run('UPDATE kit_tx SET tx_hash = NULL, req_id = NULL, updated_at = ? WHERE idem = ?', [now_utc(), $idem]);
+            }
             throw $e;
         }
         Db::run("UPDATE kit_tx SET status = 'completed', error = NULL, updated_at = ? WHERE idem = ?", [now_utc(), $idem]);

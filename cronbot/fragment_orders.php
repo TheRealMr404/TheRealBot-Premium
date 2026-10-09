@@ -14,14 +14,14 @@ try {
     $setting = select('setting', '*');
     telegramProductsEnsureSchema();
     telegramFragmentEnsureSchema();
+    // سفارش‌های پرداخت‌شده اولویت دارند؛ دریافت نرخ (که ممکن است کند یا ناموفق باشد) بعد از آن‌ها انجام می‌شود.
+    telegramFragmentProcessPendingOrders(5);
     try {
         telegramFragmentRefreshRateIfDue();
     } catch (Throwable $e) {
         telegramFragmentLogFailure('scheduled Nobitex rate', $e);
     }
-    telegramFragmentProcessPendingOrders(5);
 } catch (Throwable $e) {
     error_log('Fragment cron worker failed: ' . $e->getMessage());
     exit(1);
 }
-

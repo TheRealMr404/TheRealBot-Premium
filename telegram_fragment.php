@@ -944,6 +944,8 @@ function telegramFragmentPayOrder($orderId)
         $pdo->commit();
         $paymentCommitted = true;
         if (function_exists('clearSelectCache')) clearSelectCache('user');
+        // سفارش پرداخت‌شده بدون انتظار برای cron همین حالا به کارگر سپرده می‌شود.
+        telegramFragmentKickWorker();
         $text = telegramFragmentUserIcon('5350572310627632617', '✅') . "<b>پرداخت ثبت شد</b>\n\n";
         $text .= '<b>شماره سفارش:</b> <code>#' . (int) $order['id'] . "</code>\n\n";
         $text .= '<b>محصول:</b> ' . telegramFragmentEscape($order['product_title']) . "\n\n";
@@ -1035,7 +1037,7 @@ function telegramFragmentHandleUserRequest()
 
 function telegramFragmentHandleUserRequestInner()
 {
-    global $datain, $text, $user, $from_id;
+    global $datain, $text, $user, $from_id, $pdo;
     $state = (string) ($user['step'] ?? '');
     if (strpos((string) $datain, 'tgp_identity_') === 0) return false;
     if (strpos((string) $datain, 'tgp_fg_') !== 0 && strpos($state, 'tgp_fg_') !== 0) return false;
@@ -1222,75 +1224,224 @@ function telegramFragmentMaybeBalanceAlert()
     }
 }
 
+/** کدهای خطایی که مشکل زیرساخت/نشست هستند، نه مشکل خریدار؛ سفارش پولی‌شده باید نگه داشته و دوباره تلاش شود، نه برگشت‌زده. */
+function telegramFragmentHoldCodes()
+{
+    return [
+        'confirm_pending', 'tx_failed', 'signer_error', 'signer_down', 'signer_auth', 'signer_missing', 'insecure_signer',
+        'session_expired', 'need_verify', 'login_failed', 'blocked', 'page_changed',
+        'unavailable', 'network', 'rate_limit', 'bad_response', 'bad_request',
+    ];
+}
+
+/** خطاهایی که فقط مدیر می‌تواند رفعشان کند و باید به او هشدار داده شود. */
+function telegramFragmentAdminActionCodes()
+{
+    return ['signer_error', 'signer_down', 'signer_auth', 'signer_missing', 'insecure_signer', 'session_expired', 'need_verify', 'login_failed', 'blocked', 'page_changed'];
+}
+
+/** هشدار مدیر با فاصله‌ی زمانی تا گزارش تکراری فرستاده نشود. */
+function telegramFragmentAlertAdmin($key, $html, $everySeconds = 1800)
+{
+    try {
+        $key = 'last_alert_' . preg_replace('/[^a-z0-9_]/i', '', (string) $key);
+        $last = strtotime(telegramFragmentSetting($key, '1970-01-01 00:00:00')) ?: 0;
+        if ($last > time() - (int) $everySeconds) return false;
+        telegramFragmentSetSetting($key, date('Y-m-d H:i:s'));
+        telegramProductsReport('alert', $html);
+        return true;
+    } catch (Throwable $e) {
+        telegramFragmentLogFailure('admin alert', $e);
+        return false;
+    }
+}
+
+function telegramFragmentNotifySafe(array $order, $status, $message = '')
+{
+    try {
+        telegramFragmentNotifyOrder($order, $status, $message);
+    } catch (Throwable $e) {
+        // اعلان به کاربر هرگز نباید وضعیت سفارش (خریدِ انجام‌شده) را تغییر دهد.
+        telegramFragmentLogFailure('order notification', $e, $order['id'] ?? null);
+    }
+}
+
+function telegramFragmentPhpCli()
+{
+    $candidates = [];
+    if (defined('PHP_BINARY') && PHP_BINARY !== '' && preg_match('~(^|[\\\\/])php(\d+(\.\d+)*)?(\.exe)?$~i', PHP_BINARY)) $candidates[] = PHP_BINARY;
+    if (defined('PHP_BINDIR')) $candidates[] = rtrim(PHP_BINDIR, '/\\') . DIRECTORY_SEPARATOR . (DIRECTORY_SEPARATOR === '\\' ? 'php.exe' : 'php');
+    foreach (['/usr/local/bin/php', '/usr/bin/php'] as $path) $candidates[] = $path;
+    foreach ($candidates as $path) {
+        if (@is_file($path) && (DIRECTORY_SEPARATOR === '\\' || @is_executable($path))) return $path;
+    }
+    return '';
+}
+
+/** اجرای مستقل و بی‌صدای کارگر سفارش‌ها (همان اسکریپتی که cron اجرا می‌کند). */
+function telegramFragmentSpawnWorker()
+{
+    if (!function_exists('proc_open')) return false;
+    $script = __DIR__ . DIRECTORY_SEPARATOR . 'cronbot' . DIRECTORY_SEPARATOR . 'fragment_orders.php';
+    $php = telegramFragmentPhpCli();
+    if ($php === '' || !is_file($script)) return false;
+    try {
+        $windows = DIRECTORY_SEPARATOR === '\\';
+        $null = $windows ? 'NUL' : '/dev/null';
+        $command = $windows
+            ? 'start /B "" ' . escapeshellarg($php) . ' ' . escapeshellarg($script)
+            : 'nohup ' . escapeshellarg($php) . ' ' . escapeshellarg($script) . ' >/dev/null 2>&1 &';
+        $process = @proc_open($command, [0 => ['file', $null, 'r'], 1 => ['file', $null, 'w'], 2 => ['file', $null, 'w']], $pipes, __DIR__);
+        if (!is_resource($process)) return false;
+        if (!$windows) proc_close($process);
+        return true;
+    } catch (Throwable $e) {
+        telegramFragmentLogFailure('worker spawn', $e);
+        return false;
+    }
+}
+
+/** جایگزین وقتی اجرای مستقل ممکن نیست: بعد از ارسال پاسخ وب‌هوک، سفارش‌ها در همین پردازش انجام می‌شوند. */
+function telegramFragmentRunWorkerAfterResponse()
+{
+    global $pdo, $dsn, $dbhost, $dbname, $usernamedb, $passworddb, $options;
+    try {
+        ignore_user_abort(true);
+        @set_time_limit(280);
+        if (function_exists('fastcgi_finish_request')) {
+            @fastcgi_finish_request();
+        } else {
+            while (ob_get_level() > 0) @ob_end_flush();
+            @flush();
+        }
+        if (!($pdo instanceof PDO)) {
+            // تابع بستن اتصال‌ها پیش از این تابع اجرا می‌شود؛ اتصال تازه می‌سازیم.
+            $pdo = new PDO(
+                !empty($dsn) ? $dsn : "mysql:host=$dbhost;dbname=$dbname;charset=utf8mb4",
+                $usernamedb,
+                $passworddb,
+                !empty($options) ? $options : [PDO::ATTR_ERRMODE => PDO::ERRMODE_EXCEPTION, PDO::ATTR_DEFAULT_FETCH_MODE => PDO::FETCH_ASSOC, PDO::ATTR_EMULATE_PREPARES => false]
+            );
+        }
+        telegramFragmentProcessPendingOrders(3);
+    } catch (Throwable $e) {
+        telegramFragmentLogFailure('deferred worker', $e);
+    }
+}
+
+/**
+ * پس از پرداخت (یا ارسال مجدد توسط مدیر) کارگر را همان لحظه راه می‌اندازد تا سفارش به cron وابسته نباشد.
+ * cron همچنان پشتیبان است و قفل MySQL از اجرای هم‌زمان جلوگیری می‌کند.
+ */
+function telegramFragmentKickWorker()
+{
+    static $kicked = false;
+    if ($kicked || PHP_SAPI === 'cli') return;
+    $kicked = true;
+    try {
+        if (telegramFragmentSpawnWorker()) return;
+        register_shutdown_function('telegramFragmentRunWorkerAfterResponse');
+    } catch (Throwable $e) {
+        telegramFragmentLogFailure('worker kick', $e);
+    }
+}
+
+function telegramFragmentProcessOrder(array $order)
+{
+    global $pdo;
+    $fetchFresh = static function ($id) use ($pdo) {
+        $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=?');
+        $stmt->execute([(int) $id]);
+        return $stmt->fetch(PDO::FETCH_ASSOC) ?: null;
+    };
+    try {
+        $result = FragmentKit::buy($order['kind'], $order['recipient'], (int) $order['product_amount'], $order['idempotency_key']);
+        $stmt = $pdo->prepare("UPDATE telegram_fragment_orders SET status='completed',tx_hash=?,total_ton=?,last_error=NULL,completed_at=NOW(),next_attempt_at=NULL WHERE id=?");
+        $stmt->execute([$result['txHash'] ?? null, $result['totalTon'] ?? null, $order['id']]);
+        $order['status'] = 'completed';
+        $order['tx_hash'] = $result['txHash'] ?? null;
+        telegramFragmentNotifySafe($order, 'completed');
+    } catch (FragmentError $e) {
+        $retry = $e->retryable || in_array($e->errCode, telegramFragmentHoldCodes(), true);
+        if ($retry) {
+            $attempt = (int) $order['attempt_count'] + 1;
+            $status = $attempt >= 12 ? 'review' : 'confirm_pending';
+            $delay = min(3600, 60 * max(1, $attempt));
+            $storedError = telegramFragmentStoredError($e);
+            $pdo->prepare('UPDATE telegram_fragment_orders SET status=?,last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL ? SECOND) WHERE id=?')
+                ->execute([$status, $storedError, $delay, $order['id']]);
+            telegramFragmentLogFailure('worker held (' . $e->errCode . ', attempt ' . $attempt . ')', $e, $order['id']);
+            if (in_array($e->errCode, telegramFragmentAdminActionCodes(), true)) {
+                telegramFragmentAlertAdmin('hold_' . $e->errCode, "<b>سفارش Fragment متوقف شده است</b>\n\nدلیل: " . telegramFragmentEscape(telegramFragmentSafeReason($e)) . "\nسفارش‌های پرداخت‌شده نگه داشته می‌شوند و پس از رفع مشکل خودکار دوباره تلاش می‌شوند.\nاز «خدمات مجازی ← پریمیوم و استارز خودکار ← بررسی اتصال» وضعیت را بررسی کنید.");
+            }
+            if ($status === 'review') {
+                $order['wallet_refunded'] = 0;
+                $order['last_error'] = $storedError;
+                telegramFragmentNotifySafe($order, 'review', $storedError);
+            }
+        } else {
+            telegramFragmentRefundOrder($order['id'], telegramFragmentStoredError($e));
+            $fresh = $fetchFresh($order['id']);
+            if ($fresh) telegramFragmentNotifySafe($fresh, ((string) $fresh['status']) === 'review' ? 'review' : 'failed', telegramFragmentStoredError($e));
+        }
+    } catch (InvalidArgumentException $e) {
+        telegramFragmentRefundOrder($order['id'], telegramFragmentStoredError($e));
+        $fresh = $fetchFresh($order['id']);
+        if ($fresh) telegramFragmentNotifySafe($fresh, ((string) $fresh['status']) === 'review' ? 'review' : 'failed', telegramFragmentStoredError($e));
+    } catch (Throwable $e) {
+        $attempt = (int) $order['attempt_count'] + 1;
+        $status = $attempt >= 12 ? 'review' : 'confirm_pending';
+        $storedError = telegramFragmentStoredError($e);
+        $pdo->prepare("UPDATE telegram_fragment_orders SET status=?,last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL 5 MINUTE) WHERE id=?")
+            ->execute([$status, $storedError, $order['id']]);
+        telegramFragmentLogFailure('worker uncertain', $e, $order['id']);
+        if ($status === 'review') {
+            $order['last_error'] = $storedError;
+            $order['wallet_refunded'] = 0;
+            telegramFragmentNotifySafe($order, 'review', $storedError);
+        }
+    }
+}
+
 function telegramFragmentProcessPendingOrders($limit = 3)
 {
     global $pdo;
     telegramFragmentEnsureSchema();
-    if (telegramFragmentSetting('enabled', '0') !== '1') return 0;
+    // سفارش‌های پرداخت‌شده حتی وقتی فروش جدید خاموش شده باید تحویل داده شوند.
     $lock = (int) $pdo->query("SELECT GET_LOCK('mirza_fragment_worker',0)")->fetchColumn();
     if ($lock !== 1) return 0;
     $processed = 0;
     try {
         $pdo->exec("UPDATE telegram_fragment_orders SET status='queued',next_attempt_at=NOW(),last_error=CONCAT(COALESCE(last_error,''),' [recovered]') WHERE status='processing' AND updated_at < DATE_SUB(NOW(),INTERVAL 15 MINUTE)");
-        telegramFragmentBoot();
-        for ($i = 0; $i < max(1, min(20, (int) $limit)); $i++) {
-            $pdo->beginTransaction();
-            $stmt = $pdo->query("SELECT * FROM telegram_fragment_orders WHERE status IN ('queued','confirm_pending') AND (next_attempt_at IS NULL OR next_attempt_at<=NOW()) ORDER BY id LIMIT 1 FOR UPDATE");
-            $order = $stmt->fetch(PDO::FETCH_ASSOC);
-            if (!$order) { $pdo->commit(); break; }
-            $pdo->prepare("UPDATE telegram_fragment_orders SET status='processing',attempt_count=attempt_count+1 WHERE id=?")->execute([$order['id']]);
-            $pdo->commit();
+        $hasWork = (int) $pdo->query("SELECT COUNT(*) FROM telegram_fragment_orders WHERE status IN ('queued','confirm_pending') AND (next_attempt_at IS NULL OR next_attempt_at<=NOW())")->fetchColumn();
+        if ($hasWork > 0) {
             try {
-                $result = FragmentKit::buy($order['kind'], $order['recipient'], (int) $order['product_amount'], $order['idempotency_key']);
-                $stmt = $pdo->prepare("UPDATE telegram_fragment_orders SET status='completed',tx_hash=?,total_ton=?,last_error=NULL,completed_at=NOW(),next_attempt_at=NULL WHERE id=?");
-                $stmt->execute([$result['txHash'] ?? null, $result['totalTon'] ?? null, $order['id']]);
-                $order['status'] = 'completed';
-                $order['tx_hash'] = $result['txHash'] ?? null;
-                telegramFragmentNotifyOrder($order, 'completed');
-            } catch (FragmentError $e) {
-                $retry = $e->retryable || in_array($e->errCode, ['confirm_pending', 'tx_failed', 'signer_error'], true);
-                if ($retry) {
-                    $attempt = (int) $order['attempt_count'] + 1;
-                    $status = $attempt >= 12 ? 'review' : 'confirm_pending';
-                    $delay = min(3600, 60 * max(1, $attempt));
-                    $stmt = $pdo->prepare('UPDATE telegram_fragment_orders SET status=?,last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL ? SECOND) WHERE id=?');
-                    $storedError = telegramFragmentStoredError($e);
-                    $stmt->execute([$status, $storedError, $delay, $order['id']]);
-                    if ($status === 'review') {
-                        $order['wallet_refunded'] = 0;
-                        $order['last_error'] = $storedError;
-                        telegramFragmentNotifyOrder($order, 'review', $storedError);
-                    }
-                } else {
-                    telegramFragmentRefundOrder($order['id'], telegramFragmentStoredError($e));
-                    $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=?');
-                    $stmt->execute([$order['id']]);
-                    telegramFragmentNotifyOrder($stmt->fetch(PDO::FETCH_ASSOC), 'failed', telegramFragmentStoredError($e));
-                }
-            } catch (InvalidArgumentException $e) {
-                telegramFragmentRefundOrder($order['id'], telegramFragmentStoredError($e));
-                $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=?');
-                $stmt->execute([$order['id']]);
-                telegramFragmentNotifyOrder($stmt->fetch(PDO::FETCH_ASSOC), 'failed', telegramFragmentStoredError($e));
+                telegramFragmentBoot();
             } catch (Throwable $e) {
-                $attempt = (int) $order['attempt_count'] + 1;
-                $status = $attempt >= 12 ? 'review' : 'confirm_pending';
-                $storedError = telegramFragmentStoredError($e);
-                $stmt = $pdo->prepare("UPDATE telegram_fragment_orders SET status=?,last_error=?,next_attempt_at=DATE_ADD(NOW(),INTERVAL 5 MINUTE) WHERE id=?");
-                $stmt->execute([$status, $storedError, $order['id']]);
-                telegramFragmentLogFailure('worker uncertain', $e, $order['id']);
-                if ($status === 'review') {
-                    $order['last_error'] = $storedError;
-                    $order['wallet_refunded'] = 0;
-                    telegramFragmentNotifyOrder($order, 'review', $storedError);
-                }
+                telegramFragmentLogFailure('worker boot', $e);
+                telegramFragmentAlertAdmin('worker_boot', "<b>پردازش خودکار سفارش‌های Fragment انجام نمی‌شود</b>\n\nدلیل: " . telegramFragmentEscape(telegramFragmentSafeReason($e)) . "\nسفارش‌های پرداخت‌شده در صف می‌مانند. نصاب را یک‌بار اجرا کنید یا سرویس امضا را بررسی کنید.");
+                throw $e;
             }
-            $processed++;
+            for ($i = 0; $i < max(1, min(20, (int) $limit)); $i++) {
+                $pdo->beginTransaction();
+                $stmt = $pdo->query("SELECT * FROM telegram_fragment_orders WHERE status IN ('queued','confirm_pending') AND (next_attempt_at IS NULL OR next_attempt_at<=NOW()) ORDER BY id LIMIT 1 FOR UPDATE");
+                $order = $stmt->fetch(PDO::FETCH_ASSOC);
+                if (!$order) { $pdo->commit(); break; }
+                $pdo->prepare("UPDATE telegram_fragment_orders SET status='processing',attempt_count=attempt_count+1 WHERE id=?")->execute([$order['id']]);
+                $pdo->commit();
+                try {
+                    telegramFragmentProcessOrder($order);
+                } catch (Throwable $e) {
+                    // خطای پایگاه داده/اعلان نباید حلقه را قطع کند؛ سفارش در وضعیت processing می‌ماند و بازیابی خودکار می‌شود.
+                    telegramFragmentLogFailure('worker order', $e, $order['id']);
+                }
+                $processed++;
+            }
         }
     } finally {
         try { $pdo->query("SELECT RELEASE_LOCK('mirza_fragment_worker')"); } catch (Throwable $e) { }
     }
-    telegramFragmentMaybeBalanceAlert();
+    if (telegramFragmentSetting('enabled', '0') === '1') telegramFragmentMaybeBalanceAlert();
     return $processed;
 }
 
@@ -1543,6 +1694,7 @@ function telegramFragmentAdminOrders()
     foreach ($orders as $order) {
         $rows[] = [['text' => '#' . $order['id'] . ' | ' . $order['recipient'] . ' | ' . telegramFragmentStatusLabel($order['status']), 'callback_data' => 'vsa_fg_o_' . $order['id']]];
     }
+    $rows[] = [['text' => 'پردازش فوری صف', 'callback_data' => 'vsa_fg_runnow', 'style' => 'success']];
     $rows[] = [['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']];
     virtualServicesAdminReply("<b>سفارش‌های Fragment</b>\n\nآخرین سفارش‌ها و وضعیت پردازش آن‌ها:", $rows);
 }
@@ -1692,6 +1844,8 @@ function telegramFragmentAdminHandleRequest()
         } catch (Throwable $e) {
             telegramFragmentLogFailure('admin save', $e);
             $reason = $e instanceof InvalidArgumentException ? $e->getMessage() : telegramFragmentSafeReason($e);
+            // پیام کوکی‌های ناقص برای مدیر راهگشاست و محتوای کوکی را لو نمی‌دهد (فقط نام کوکی‌ها).
+            if ($e instanceof FragmentError && $e->errCode === 'bad_request' && strpos($e->getMessage(), 'کوکی‌های لازم پیدا نشد') === 0) $reason = $e->getMessage();
             virtualServicesAdminReply("<b>ذخیره نشد</b>\n\n<b>دلیل:</b> " . telegramFragmentEscape($reason), [[['text' => 'انصراف', 'callback_data' => 'vsa_fg_home']]]);
             return true;
         }
@@ -1780,6 +1934,12 @@ function telegramFragmentAdminHandleRequest()
     }
     if ($datain === 'vsa_fg_rate_test') { telegramFragmentAdminPricing(true); return true; }
     if ($datain === 'vsa_fg_orders') { telegramFragmentAdminOrders(); return true; }
+    if ($datain === 'vsa_fg_runnow') {
+        $pdo->exec("UPDATE telegram_fragment_orders SET next_attempt_at=NOW() WHERE status IN ('queued','confirm_pending')");
+        telegramFragmentKickWorker();
+        telegramFragmentAdminOrders();
+        return true;
+    }
     if ($datain === 'vsa_fg_help') {
         $text = "<b>راهنمای Fragment</b>\n\n۱. کیف پول TON را ثبت کنید.\n۲. نسخه درست کیف پول را انتخاب کنید.\n۳. با دکمه ورود Fragment، نشست را فعال کنید.\n۴. کلید TON RPC و سقف‌ها را تنظیم کنید.\n۵. نرخ لحظه‌ای و سود فروش را بررسی کنید، سپس فروش را روشن کنید.\n\nتمام سفارش‌ها واقعی هستند و با کلید یکتا اجرا می‌شوند؛ تکرار worker باعث پرداخت دوباره نمی‌شود.";
         virtualServicesAdminReply($text, [[['text' => 'بازگشت', 'callback_data' => 'vsa_fg_home']]]); return true;
@@ -1826,7 +1986,12 @@ function telegramFragmentAdminHandleRequest()
         }
         telegramFragmentAdminOrder($m[1]); return true;
     }
-    if (preg_match('/^vsa_fg_retry_(\d+)$/', $datain, $m)) { $pdo->prepare("UPDATE telegram_fragment_orders SET status='queued',next_attempt_at=NOW(),last_error=NULL WHERE id=? AND wallet_refunded=0 AND status IN ('failed','review')")->execute([(int) $m[1]]); telegramFragmentAdminOrder($m[1]); return true; }
+    if (preg_match('/^vsa_fg_retry_(\d+)$/', $datain, $m)) {
+        // شمارنده‌ی تلاش و اعلان قبلی صفر می‌شود تا سفارش دوباره‌صف‌شده فرصت کامل تلاش و اعلان تازه داشته باشد.
+        $pdo->prepare("UPDATE telegram_fragment_orders SET status='queued',attempt_count=0,notified_status=NULL,next_attempt_at=NOW(),last_error=NULL WHERE id=? AND wallet_refunded=0 AND status IN ('failed','review')")->execute([(int) $m[1]]);
+        telegramFragmentKickWorker();
+        telegramFragmentAdminOrder($m[1]); return true;
+    }
     return true;
 }
 
