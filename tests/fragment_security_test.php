@@ -28,6 +28,12 @@ expectTrue(str_contains(telegramFragmentUserIcon('5280962371207077415', '🛍'),
 expectTrue(str_contains(telegramProductsSafeCustomText($custom), 'tg-emoji'), 'Premium custom emoji was removed for premium user.');
 expectTrue(isset(telegramProductsStyledButton('عنوان', 'test', 'primary', '5280962371207077415')['icon_custom_emoji_id']), 'Premium button custom emoji is missing.');
 
+$username = 'NOT_USERNAME';
+$user = ['username' => 'none'];
+expectTrue(telegramFragmentCurrentUsername() === '', 'Internal missing-username markers must not be used as Fragment recipients.');
+$username = '@Valid_User';
+expectTrue(telegramFragmentCurrentUsername() === 'valid_user', 'The current Telegram username was not normalized for self purchase.');
+
 $internal = new RuntimeException('SQLSTATE connection failed at http://db:3306 secret=abc');
 $card = telegramProductsFailureCard(telegramProductsPublicFailureReason($internal), 42, true);
 expectTrue(!str_contains($card, 'SQLSTATE') && !str_contains($card, 'db:3306') && !str_contains($card, 'secret'), 'Generic purchase card leaked an internal error.');
@@ -108,6 +114,41 @@ expectTrue(str_contains($adminSource, '$updateMessage = "✅ بروزرسانی 
 expectTrue(str_contains($fragmentSource, "'dryRun' => false"), 'Fragment purchases are not forced to real mode.');
 expectTrue(!str_contains($fragmentSource, "telegramFragmentSetting('dry_run'"), 'Legacy dry-run setting still affects execution.');
 expectTrue(str_contains($fragmentSource, 'tgp_fg_custom_stars') && str_contains($fragmentSource, 'stars_custom_min'), 'Custom Stars flow or limits are missing.');
+foreach ([
+    '5172632227871196306', '5134202243486057363', '5933754557900268168',
+    '5814643080283821212', '5933909314161876363', '5229064374403998351',
+    '5273782027701722256', '5933979777395338731', '5424655845034049558',
+] as $customStarsEmojiId) {
+    expectTrue(str_contains($fragmentSource, "telegramFragmentUserIcon('{$customStarsEmojiId}'"), 'Custom Stars prompt is missing premium emoji ' . $customStarsEmojiId . '.');
+}
+expectTrue(str_contains($fragmentSource, '"<b>حداقل خرید:</b> " . number_format($min)'), 'Custom Stars prompt does not use the admin minimum setting.');
+expectTrue(str_contains($fragmentSource, "telegramFragmentUserIcon('5271604874419647061'"), 'Recipient prompt title premium emoji is missing.');
+expectTrue(substr_count($fragmentSource, "telegramFragmentUserIcon('5123163417326126159'") >= 2, 'Recipient prompt instruction premium emojis are missing.');
+expectTrue(str_contains($fragmentSource, "telegramProductsStyledButton(\$selfText, \$selfCallback, 'success', '5107507509912929705')"), 'Recipient self button styling is missing.');
+expectTrue(str_contains($fragmentSource, "if (preg_match('/^tgp_fg_p_(\\d+)$/', \$datain, \$m)) { telegramFragmentShowRecipientPrompt(\$m[1]);"), 'Package selection does not open the recipient prompt directly.');
+expectTrue(str_contains($fragmentSource, "if (preg_match('/^tgp_fg_self_(\\d+)$/', \$datain, \$m))"), 'Self-recipient callback is missing.');
+foreach ([
+    '5814643080283821212', '5172632227871196306', '5134202243486057363',
+    '5120722716260828125', '5931328859155733422', '5231012545799666522',
+    '5933979777395338731', '5870904952838168065', '5415601079016497686',
+] as $premiumPlanEmojiId) {
+    expectTrue(str_contains($fragmentSource, "telegramFragmentUserIcon('{$premiumPlanEmojiId}'"), 'Premium plan selector is missing premium emoji ' . $premiumPlanEmojiId . '.');
+}
+expectTrue(str_contains($fragmentSource, '<b>کدام پلن را انتخاب می‌کنید؟</b>'), 'Premium plan selector question is missing.');
+foreach ([
+    '5123230779593196220', '5134202243486057363', '5933719656996018990',
+    '5933672936341772646', '5933493277859781329', '5328098344495490329',
+    '5118686540985271080',
+] as $invoiceEmojiId) {
+    expectTrue(str_contains($fragmentSource, "telegramFragmentUserIcon('{$invoiceEmojiId}'"), 'Fragment invoice is missing premium emoji ' . $invoiceEmojiId . '.');
+}
+expectTrue(str_contains($fragmentSource, "telegramProductsStyledButton('تأیید', 'tgp_fg_pay_'"), 'Styled Fragment confirmation button is missing.');
+expectTrue(str_contains($fragmentSource, "telegramFragmentButton('لغو خرید', 'tgp_fg_cancel_'"), 'Fragment cancellation button is missing.');
+expectTrue(str_contains($fragmentSource, "'tgp_fg_discount_' . \$order['id']"), 'Fragment discount button is missing.');
+expectTrue(str_contains($fragmentSource, 'telegram_fragment_discount_redemptions'), 'Fragment discount redemption ledger is missing.');
+expectTrue(str_contains($fragmentSource, 'function telegramFragmentDiscountResult') && str_contains($fragmentSource, 'function telegramFragmentRegisterDiscount'), 'Fragment discount validation is incomplete.');
+expectTrue(str_contains($fragmentSource, "telegramFragmentDiscountResult(\$order['discount_code'], \$originalPrice, \$from_id, true)"), 'Fragment payment does not revalidate the discount under lock.');
+expectTrue(substr_count($fragmentSource, 'telegramFragmentReleaseDiscount(') >= 3, 'Fragment refunds do not release discount usage.');
 expectTrue(str_contains($fragmentSource, 'vsa_fg_pricing') && str_contains($fragmentSource, 'profit_percent_stars'), 'Live pricing admin controls are missing.');
 preg_match('/private static function quote\(.*?\/\* ---------- گیفت/s', $fragmentLiveSource, $premiumQuoteMatch);
 $premiumQuoteSource = $premiumQuoteMatch[0] ?? '';
