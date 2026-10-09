@@ -39,6 +39,10 @@ expectTrue($stored === 'signer_down|سرویس پردازش تراکنش موق�
 
 $price = telegramFragmentPriceFromQuote(1.25, 300000, 10, 5000, 1000);
 expectTrue($price['base'] === 375000 && $price['final'] === 418000 && $price['profit'] === 43000, 'Live price calculation is incorrect.');
+expectTrue(telegramFragmentQuoteIsValid(['quote_age_seconds' => 0], 10), 'A new Fragment quote must be valid.');
+expectTrue(telegramFragmentQuoteIsValid(['quote_age_seconds' => 600], 10), 'A Fragment quote must remain valid for the full ten minutes.');
+expectTrue(!telegramFragmentQuoteIsValid(['quote_age_seconds' => 601], 10), 'An expired Fragment quote was accepted.');
+expectTrue(telegramFragmentQuoteIsValid(['quote_age_seconds' => -2], 10), 'A database clock adjustment invalidated a new quote.');
 expectTrue(telegramFragmentExtractNobitexRate(['status' => 'ok', 'stats' => ['gram-rls' => ['isClosed' => false, 'bestSell' => '3200000']]], 'rls') === 320000.0, 'Nobitex GRAM/RLS rate conversion is incorrect.');
 expectTrue(telegramFragmentExtractNobitexRate(['status' => 'ok', 'asks' => [['3210000', '2']]], 'irt') === 321000.0, 'Nobitex orderbook rial-to-toman conversion is incorrect.');
 $orderbookPrice = telegramFragmentPriceFromQuote(1.25, telegramFragmentExtractNobitexRate(['status' => 'ok', 'asks' => [['3210000', '2']]], 'irt'), 10, 5000, 1000);

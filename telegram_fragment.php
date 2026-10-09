@@ -445,6 +445,17 @@ function telegramFragmentCustomStarsBounds()
     return [$min, $max];
 }
 
+function telegramFragmentQuoteIsValid(array $order, $validMinutes)
+{
+    $validMinutes = max(1, min(60, (int) $validMinutes));
+    if (!array_key_exists('quote_age_seconds', $order) || !is_numeric($order['quote_age_seconds'])) {
+        return false;
+    }
+    // A small negative value can occur around a database clock adjustment.
+    $ageSeconds = max(0, (int) $order['quote_age_seconds']);
+    return $ageSeconds <= ($validMinutes * 60);
+}
+
 function telegramFragmentSetUserPayload(array $payload)
 {
     global $pdo, $from_id, $user;
@@ -629,7 +640,7 @@ function telegramFragmentPayOrder($orderId)
     $paymentCommitted = false;
     try {
         $pdo->beginTransaction();
-        $stmt = $pdo->prepare('SELECT * FROM telegram_fragment_orders WHERE id=? AND user_id=? FOR UPDATE');
+        $stmt = $pdo->prepare('SELECT o.*, TIMESTAMPDIFF(SECOND, COALESCE(o.quoted_at, o.created_at), NOW()) AS quote_age_seconds FROM telegram_fragment_orders o WHERE o.id=? AND o.user_id=? FOR UPDATE');
         $stmt->execute([(int) $orderId, (string) $from_id]);
         $order = $stmt->fetch(PDO::FETCH_ASSOC);
         if (!$order || $order['status'] !== 'draft') {
@@ -660,8 +671,7 @@ function telegramFragmentPayOrder($orderId)
         }
         if ($livePricing) {
             $validMinutes = max(1, min(60, (int) telegramFragmentSetting('quote_valid_minutes', '10')));
-            $quotedAt = strtotime((string) ($order['quoted_at'] ?? $order['created_at']));
-            if (!$quotedAt || $quotedAt < time() - ($validMinutes * 60)) {
+            if (!telegramFragmentQuoteIsValid($order, $validMinutes)) {
                 $pdo->rollBack();
                 $back = $order['product_id'] === null ? 'tgp_fg_custom_stars' : 'tgp_fg_p_' . $order['product_id'];
                 telegramProductsReply('اعتبار قیمت لحظه‌ای این فاکتور تمام شده است. برای دریافت قیمت تازه دوباره ادامه دهید.', json_encode(['inline_keyboard' => [[telegramFragmentButton('دریافت قیمت تازه', $back, 'primary', 'action')], [telegramFragmentButton('بازگشت', 'tgp_fg_home', 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));
