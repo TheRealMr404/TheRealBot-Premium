@@ -8,7 +8,15 @@ function telegramProductsEnsureColumn($table, $column, $definition)
 {
     global $pdo;
 
-    $allowed = ['telegram_product_categories', 'telegram_products', 'telegram_product_orders', 'telegram_product_discounts', 'telegram_product_identity'];
+    $allowed = [
+        'telegram_product_categories',
+        'telegram_products',
+        'telegram_product_stock',
+        'telegram_product_orders',
+        'telegram_product_fields',
+        'telegram_product_discounts',
+        'telegram_product_identity',
+    ];
     if (!in_array($table, $allowed, true)) {
         throw new InvalidArgumentException('Invalid virtual services table.');
     }
@@ -228,6 +236,12 @@ function telegramProductsEnsureSchema()
     telegramProductsEnsureColumn('telegram_product_identity', 'document_kind', 'VARCHAR(10) NULL AFTER document_file_id');
     telegramProductsEnsureColumn('telegram_products', 'warranty_days', "INT UNSIGNED NOT NULL DEFAULT 0 AFTER `max_per_user`");
     telegramProductsEnsureColumn('telegram_products', 'max_resends', "INT UNSIGNED NOT NULL DEFAULT 1 AFTER `warranty_days`");
+    // Older installations may already have these tables with an incomplete
+    // schema. CREATE TABLE IF NOT EXISTS does not add missing core columns.
+    telegramProductsEnsureColumn('telegram_product_stock', 'product_id', 'INT UNSIGNED NULL');
+    telegramProductsEnsureColumn('telegram_product_fields', 'product_id', 'INT UNSIGNED NULL');
+    telegramProductsEnsureColumn('telegram_product_orders', 'product_id', 'INT UNSIGNED NULL');
+    telegramProductsEnsureColumn('telegram_product_discounts', 'product_id', 'INT UNSIGNED NULL');
     telegramProductsEnsureColumn('telegram_product_orders', 'customer_input', "TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL AFTER `status`");
     telegramProductsEnsureColumn('telegram_product_orders', 'refunded_at', "DATETIME NULL AFTER `delivered_at`");
     telegramProductsEnsureColumn('telegram_product_orders', 'original_price', "BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER `price`");
@@ -258,6 +272,7 @@ function telegramProductsEnsureSchema()
         'loyalty_max_percent' => '20',
         'pending_alert_hours' => '3',
         'daily_summary_enabled' => '1',
+        'invoice_price_lock_minutes' => '10',
     ];
     $stmt = $pdo->prepare('INSERT IGNORE INTO telegram_product_settings (setting_key, setting_value) VALUES (?, ?)');
     foreach ($defaults as $key => $value) {
@@ -300,6 +315,16 @@ function telegramProductsSetSetting($key, $value)
     telegramProductsEnsureSchema();
     $stmt = $pdo->prepare('INSERT INTO telegram_product_settings (setting_key, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = VALUES(setting_value)');
     $stmt->execute([$key, $value]);
+}
+
+function telegramProductsInvoicePriceLocked(array $order, $minutes = null)
+{
+    if ($minutes === null) {
+        $minutes = (int) telegramProductsSetting('invoice_price_lock_minutes', '10');
+    }
+    $minutes = max(1, min(60, (int) $minutes));
+    $createdAt = strtotime((string) ($order['created_at'] ?? ''));
+    return $createdAt !== false && $createdAt >= time() - ($minutes * 60);
 }
 
 function telegramProductsButtonText()
@@ -834,7 +859,9 @@ function telegramProductsPayOrder($orderId)
             return;
         }
         $originalPrice = (int) ($order['original_price'] ?: $order['price']);
-        if ((int) $currentProduct['price'] !== $originalPrice || $currentProduct['delivery_type'] !== $order['delivery_type']) {
+        $priceLocked = telegramProductsInvoicePriceLocked($order);
+        $priceChanged = (int) $currentProduct['price'] !== $originalPrice;
+        if ($currentProduct['delivery_type'] !== $order['delivery_type'] || ($priceChanged && !$priceLocked)) {
             $stmt = $pdo->prepare("UPDATE telegram_product_orders SET status = 'cancelled' WHERE id = ?");
             $stmt->execute([$order['id']]);
             $pdo->commit();
@@ -842,7 +869,11 @@ function telegramProductsPayOrder($orderId)
             return;
         }
 
-        [$financialOk, $financial] = telegramProductsPreparePayment($order, $currentProduct);
+        $paymentProduct = $currentProduct;
+        if ($priceLocked) {
+            $paymentProduct['price'] = $originalPrice;
+        }
+        [$financialOk, $financial] = telegramProductsPreparePayment($order, $paymentProduct);
         if (!$financialOk) {
             $pdo->rollBack();
             telegramProductsReply($financial, json_encode(['inline_keyboard' => [[telegramProductsActionButton('بازگشت به فاکتور', 'tgp_checkout_' . $order['id'], 'danger', 'navigation')]]], JSON_UNESCAPED_UNICODE));

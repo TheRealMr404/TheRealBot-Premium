@@ -83,6 +83,10 @@ function telegramFragmentEnsureSchema()
         CONSTRAINT fk_tfo_product FOREIGN KEY (product_id) REFERENCES telegram_fragment_products(id) ON DELETE SET NULL
     ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
 
+    // Migrate installations that created the orders table with an older
+    // Fragment schema. The CREATE statement above does not alter that table.
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'product_id', 'BIGINT UNSIGNED NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'updated_at', 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'base_price', 'BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER price');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'quote_ton', 'DECIMAL(20,9) NULL AFTER base_price');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'ton_rate', 'BIGINT UNSIGNED NULL AFTER quote_ton');

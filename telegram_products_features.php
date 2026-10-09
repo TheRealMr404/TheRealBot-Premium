@@ -309,6 +309,9 @@ function telegramProductsCheckout($orderId)
     if ((int) $order['points_used'] > 0) $text .= '<b>امتیاز مصرفی:</b> ' . (int) $order['points_used'] . "\n";
     $text .= '<b>مبلغ قابل پرداخت:</b> ' . telegramProductsMoney($order['price']) . "\n";
     $text .= '<b>موجودی کیف پول:</b> ' . telegramProductsMoney($balance) . '</blockquote>';
+    if (telegramProductsInvoicePriceLocked($order)) {
+        $text .= "\n\nمبلغ این فاکتور تا ۱۰ دقیقه پس از صدور محفوظ است.";
+    }
     $text .= "\n\n" . telegramProductsSafeCustomText(telegramProductsSetting('checkout_text', 'اطلاعات سفارش را بررسی و پرداخت را تأیید کنید.'));
     if (!empty($order['customer_input'])) $text .= "\n\n<b>اطلاعات سفارش:</b>\n<blockquote>" . telegramProductsFormatCustomerInput($order['customer_input']) . '</blockquote>';
     $rows = [[telegramProductsActionButton(empty($order['discount_code']) ? 'ثبت کد تخفیف' : 'تغییر کد تخفیف', 'tgp_discount_' . $order['id'], 'primary', 'action')]];
@@ -338,7 +341,9 @@ function telegramProductsRepriceOrder($orderId, $discountCode = null, $togglePoi
     $stmt->execute([(int) $orderId, $from_id]);
     $order = $stmt->fetch(PDO::FETCH_ASSOC);
     if (!$order) return [false, 'سفارش معتبر نیست.'];
-    $original = (int) $order['current_price'];
+    $original = telegramProductsInvoicePriceLocked($order)
+        ? (int) ($order['original_price'] ?: $order['price'])
+        : (int) $order['current_price'];
     $discountAmount = (int) $order['discount_amount'];
     $code = $order['discount_code'];
     if ($discountCode !== null) {
