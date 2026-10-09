@@ -2624,6 +2624,13 @@ function activecron()
 {
     global $domainhosts;
 
+    // Docker instances install their complete cron set from container-start.sh.
+    // Registering a second per-user crontab here would duplicate jobs after every
+    // container rebuild and would make them depend on public DNS/SSL hairpinning.
+    if (getenv('MIRZA_DOCKER_INSTANCE') !== false) {
+        return true;
+    }
+
     $cronCommands = [
         "*/15 * * * * curl https://$domainhosts/cronbot/statusday.php",
         "*/1 * * * * curl https://$domainhosts/cronbot/croncard.php",

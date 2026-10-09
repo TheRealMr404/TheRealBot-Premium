@@ -2331,9 +2331,30 @@ set -eu
 slug=${MIRZA_DOCKER_INSTANCE:-main}
 minute=$(printf '%s' "$slug" | cksum | awk '{print $1}')
 minute=$((minute % 60))
-printf '* * * * * www-data /usr/bin/flock -n /run/lock/mirza-fragment.lock php /var/www/html/cronbot/fragment_orders.php >/dev/null 2>&1\n' > /etc/cron.d/mirza-fragment
-printf 'MIRZA_DOCKER_INSTANCE=%s\n%s */5 * * * root /usr/bin/flock -n /run/lock/mirza-backup.lock php /var/www/html/cronbot/backupbot.php >> /var/log/mirza-backup.log 2>&1\n' "$slug" "$minute" > /etc/cron.d/mirza-backup
-chmod 0644 /etc/cron.d/mirza-fragment /etc/cron.d/mirza-backup
+cat > /etc/cron.d/mirza-runtime <<CRON
+SHELL=/bin/sh
+PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
+MIRZA_DOCKER_INSTANCE=$slug
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-fragment.lock php /var/www/html/cronbot/fragment_orders.php >/dev/null 2>&1
+*/15 * * * * www-data /usr/bin/flock -n /run/lock/mirza-statusday.lock php /var/www/html/cronbot/statusday.php >/dev/null 2>&1
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-croncard.lock php /var/www/html/cronbot/croncard.php >/dev/null 2>&1
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-notifications.lock php /var/www/html/cronbot/NoticationsService.php >/dev/null 2>&1
+*/5 * * * * www-data /usr/bin/flock -n /run/lock/mirza-payment-expire.lock php /var/www/html/cronbot/payment_expire.php >/dev/null 2>&1
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-sendmessage.lock php /var/www/html/cronbot/sendmessage.php >/dev/null 2>&1
+*/3 * * * * www-data /usr/bin/flock -n /run/lock/mirza-plisio.lock php /var/www/html/cronbot/plisio.php >/dev/null 2>&1
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-activeconfig.lock php /var/www/html/cronbot/activeconfig.php >/dev/null 2>&1
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-disableconfig.lock php /var/www/html/cronbot/disableconfig.php >/dev/null 2>&1
+*/2 * * * * www-data /usr/bin/flock -n /run/lock/mirza-gift.lock php /var/www/html/cronbot/gift.php >/dev/null 2>&1
+*/30 * * * * www-data /usr/bin/flock -n /run/lock/mirza-expireagent.lock php /var/www/html/cronbot/expireagent.php >/dev/null 2>&1
+*/15 * * * * www-data /usr/bin/flock -n /run/lock/mirza-on-hold.lock php /var/www/html/cronbot/on_hold.php >/dev/null 2>&1
+*/2 * * * * www-data /usr/bin/flock -n /run/lock/mirza-configtest.lock php /var/www/html/cronbot/configtest.php >/dev/null 2>&1
+*/15 * * * * www-data /usr/bin/flock -n /run/lock/mirza-uptime-node.lock php /var/www/html/cronbot/uptime_node.php >/dev/null 2>&1
+*/15 * * * * www-data /usr/bin/flock -n /run/lock/mirza-uptime-panel.lock php /var/www/html/cronbot/uptime_panel.php >/dev/null 2>&1
+* * * * * www-data /usr/bin/flock -n /run/lock/mirza-lottery.lock php /var/www/html/cronbot/lottery.php >/dev/null 2>&1
+$minute */5 * * * root /usr/bin/flock -n /run/lock/mirza-backup.lock php /var/www/html/cronbot/backupbot.php >> /var/log/mirza-backup.log 2>&1
+CRON
+rm -f /etc/cron.d/mirza-fragment /etc/cron.d/mirza-backup
+chmod 0644 /etc/cron.d/mirza-runtime
 cron
 exec apache2-foreground
 EOF

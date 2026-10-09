@@ -5,15 +5,123 @@ require_auth();
 
 $method = $_SERVER['REQUEST_METHOD'];
 
+$defaultKeyboard = [
+    [['text' => 'text_sell'], ['text' => 'text_extend']],
+    [['text' => 'text_usertest'], ['text' => 'text_wheel_luck']],
+    [['text' => 'text_Purchased_services'], ['text' => 'accountwallet']],
+    [['text' => 'text_affiliates'], ['text' => 'text_Tariff_list']],
+    [['text' => 'text_virtual_services']],
+    [['text' => 'text_support'], ['text' => 'text_help']],
+];
+
+function panel_keyboard_rows($value, array $fallback): array
+{
+    if (is_string($value)) {
+        $value = json_decode($value, true);
+    }
+
+    $rows = is_array($value) && isset($value['keyboard']) ? $value['keyboard'] : $value;
+    if (!is_array($rows)) {
+        return $fallback;
+    }
+
+    $normalised = [];
+    foreach ($rows as $row) {
+        if (!is_array($row)) {
+            continue;
+        }
+        $buttons = [];
+        foreach ($row as $button) {
+            if (!is_array($button) || !isset($button['text']) || !is_string($button['text'])) {
+                continue;
+            }
+            $text = trim($button['text']);
+            if ($text === '') {
+                continue;
+            }
+            $cleanButton = ['text' => $text];
+            if (isset($button['style']) && in_array($button['style'], ['primary', 'success', 'danger'], true)) {
+                $cleanButton['style'] = $button['style'];
+            }
+            if (isset($button['icon_custom_emoji_id']) && preg_match('/^\d{1,32}$/', (string) $button['icon_custom_emoji_id'])) {
+                $cleanButton['icon_custom_emoji_id'] = (string) $button['icon_custom_emoji_id'];
+            }
+            $buttons[] = $cleanButton;
+        }
+        if ($buttons !== []) {
+            $normalised[] = array_slice($buttons, 0, 3);
+        }
+    }
+
+    return $normalised !== [] ? $normalised : $fallback;
+}
+
+function panel_keyboard_json(array $payload, int $status = 200): void
+{
+    http_response_code($status);
+    header('Content-Type: application/json; charset=utf-8');
+    header('Cache-Control: no-store, no-cache, must-revalidate, max-age=0');
+    echo json_encode($payload, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    exit;
+}
+
 // ۱. دریافت تنظیمات فعلی بدون وابستگی به ستون id
 $stmt_get = $pdo->query("SELECT * FROM setting LIMIT 1");
 $current_setting = $stmt_get->fetch(PDO::FETCH_ASSOC) ?: [];
+
+if ($method === 'GET' && ($_GET['action'] ?? '') === 'data') {
+    try {
+        $textIds = [
+            'text_usertest', 'text_Purchased_services', 'text_support', 'text_help',
+            'accountwallet', 'text_sell', 'text_Tariff_list', 'text_affiliates',
+            'text_wheel_luck', 'text_extend', 'text_virtual_services',
+        ];
+        $texts = array_fill_keys($textIds, '');
+        $texts['text_virtual_services'] = 'خدمات مجازی';
+
+        $textRows = $pdo->query("SELECT id_text, text FROM textbot")->fetchAll(PDO::FETCH_ASSOC);
+        foreach ($textRows as $textRow) {
+            $id = (string) ($textRow['id_text'] ?? '');
+            if (array_key_exists($id, $texts)) {
+                $texts[$id] = (string) ($textRow['text'] ?? '');
+            }
+        }
+
+        $userKeyboard = panel_keyboard_rows($current_setting['keyboardmain'] ?? null, $defaultKeyboard);
+        $usedButtons = [];
+        foreach ($userKeyboard as $row) {
+            foreach ($row as $button) {
+                $usedButtons[$button['text']] = true;
+            }
+        }
+
+        $availableKeyboard = [];
+        foreach ($textIds as $textId) {
+            if (!isset($usedButtons[$textId])) {
+                $availableKeyboard[] = [['text' => $textId]];
+            }
+        }
+
+        panel_keyboard_json([
+            'keylist' => $availableKeyboard,
+            'userlist' => $userKeyboard,
+            'text' => $texts,
+        ]);
+    } catch (Throwable $e) {
+        error_log('Web panel keyboard data error: ' . $e->getMessage());
+        panel_keyboard_json(['status' => false, 'message' => 'امکان دریافت تنظیمات کیبورد وجود ندارد.'], 500);
+    }
+}
 
 if ($method == "POST") {
     $raw_payload = file_get_contents("php://input");
     $keyboard = json_decode($raw_payload, true);
 
     if (is_array($keyboard)) {
+        $keyboard = panel_keyboard_rows($keyboard, []);
+        if ($keyboard === []) {
+            panel_keyboard_json(['status' => false, 'message' => 'چیدمان ارسال‌شده معتبر نیست.'], 422);
+        }
         $old_data = json_decode($current_setting['keyboardmain'] ?? '{}', true);
 
         // استخراج و نگاشت ویژگی‌های هر دکمه (استایل و ایموجی پرمیوم)
@@ -58,15 +166,15 @@ if ($method == "POST") {
         
         update("setting", "keyboardmain", $json_data, null, null);
 
-        header('Content-Type: application/json');
-        echo json_encode(['status' => true, 'message' => 'کیبورد با موفقیت ذخیره شد']);
-        exit;
+        panel_keyboard_json(['status' => true, 'message' => 'کیبورد با موفقیت ذخیره شد']);
     }
+
+    panel_keyboard_json(['status' => false, 'message' => 'داده ارسالی معتبر نیست.'], 400);
 }
 
 $action = filter_input(INPUT_GET, 'action');
 if ($action === "reaset") {
-    $default_keyboard = '{"keyboard":[[{"text":"text_sell"},{"text":"text_extend"}],[{"text":"text_usertest"},{"text":"text_wheel_luck"}],[{"text":"text_Purchased_services"},{"text":"accountwallet"}],[{"text":"text_affiliates"},{"text":"text_Tariff_list"}],[{"text":"text_virtual_services"}],[{"text":"text_support"},{"text":"text_help"}]]}';
+    $default_keyboard = json_encode(['keyboard' => $defaultKeyboard], JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     update("setting", "keyboardmain", $default_keyboard, null, null);
     header('Location: keyboard.php');
     exit;
@@ -79,8 +187,8 @@ if ($action === "reaset") {
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title><?= $textbotlang['panel']['keyboardManageTitle'] ?? 'مدیریت کیبورد' ?></title>
 
-    <script type="module" crossorigin src="js/sort_keyboard.js"></script>
-    <link rel="stylesheet" crossorigin href="css/sort_keyboard.css">
+    <script type="module" crossorigin src="js/sort_keyboard.js?v=<?= (int) @filemtime(__DIR__ . '/js/sort_keyboard.js') ?>"></script>
+    <link rel="stylesheet" crossorigin href="css/sort_keyboard.css?v=<?= (int) @filemtime(__DIR__ . '/css/sort_keyboard.css') ?>">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     
     <style>
