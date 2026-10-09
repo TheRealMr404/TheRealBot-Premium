@@ -14,7 +14,7 @@ function expectTrue(bool $condition, string $message): void
 }
 
 $update = ['message' => ['from' => ['id' => 1, 'is_premium' => false]]];
-expectTrue(telegramFragmentUserIcon('5280962371207077415', '🛍') === '', 'Non-premium user must not receive a custom emoji tag.');
+expectTrue(telegramFragmentUserIcon('5996724404866781885', '✅') === '<tg-emoji emoji-id="5996724404866781885">✅</tg-emoji> ', 'Fragment custom emoji does not contain a valid default emoji.');
 $adminKeyboard = json_decode(virtualServicesAdminKeyboard([[['text' => 'مدیریت', 'callback_data' => 'vsa_home', 'style' => 'primary', 'icon_custom_emoji_id' => '5280962371207077415']]]), true);
 expectTrue(!isset($adminKeyboard['inline_keyboard'][0][0]['style'], $adminKeyboard['inline_keyboard'][0][0]['icon_custom_emoji_id']), 'Admin keyboard styling was not removed.');
 $styledAdminButton = $adminKeyboard['inline_keyboard'][0][0];
@@ -33,6 +33,12 @@ $user = ['username' => 'none'];
 expectTrue(telegramFragmentCurrentUsername() === '', 'Internal missing-username markers must not be used as Fragment recipients.');
 $username = '@Valid_User';
 expectTrue(telegramFragmentCurrentUsername() === 'valid_user', 'The current Telegram username was not normalized for self purchase.');
+$update = ['callback_query' => ['from' => ['id' => 1, 'username' => 'Callback_User', 'is_premium' => false]]];
+$username = 'NOT_USERNAME';
+expectTrue(telegramFragmentCurrentUsername() === 'callback_user', 'Self purchase did not read the username from a callback update.');
+expectTrue(telegramFragmentNormalizeRecipient(' https://t.me/Valid_User?start=test ') === 'valid_user', 'Telegram profile URL was not normalized for a manual recipient.');
+expectTrue(telegramFragmentNormalizeRecipient(" @Valid_User\u{200C} ") === 'valid_user', 'Whitespace or zero-width text broke manual recipient normalization.');
+expectTrue(telegramFragmentNormalizeRecipient('invalid recipient') === '', 'An invalid manual recipient was accepted.');
 
 $internal = new RuntimeException('SQLSTATE connection failed at http://db:3306 secret=abc');
 $card = telegramProductsFailureCard(telegramProductsPublicFailureReason($internal), 42, true);
@@ -94,6 +100,7 @@ $installer = file_get_contents(dirname(__DIR__) . '/install.sh');
 $signerSource = file_get_contents(dirname(__DIR__) . '/services/fragment-signer/server.js');
 $adminSource = file_get_contents(dirname(__DIR__) . '/admin.php');
 $fragmentSource = file_get_contents(dirname(__DIR__) . '/telegram_fragment.php');
+$productsSource = file_get_contents(dirname(__DIR__) . '/telegram_products.php');
 $fragmentLiveSource = file_get_contents(dirname(__DIR__) . '/fragment-kit/php/FragmentLive.php');
 $rateWorkerSource = file_get_contents(dirname(__DIR__) . '/cronbot/fragment_orders.php');
 $virtualAdminSource = file_get_contents(dirname(__DIR__) . '/telegram_products_admin.php');
@@ -127,6 +134,10 @@ expectTrue(substr_count($fragmentSource, "telegramFragmentUserIcon('512316341732
 expectTrue(str_contains($fragmentSource, "telegramProductsStyledButton(\$selfText, \$selfCallback, 'success', '5107507509912929705')"), 'Recipient self button styling is missing.');
 expectTrue(str_contains($fragmentSource, "if (preg_match('/^tgp_fg_p_(\\d+)$/', \$datain, \$m)) { telegramFragmentShowRecipientPrompt(\$m[1]);"), 'Package selection does not open the recipient prompt directly.');
 expectTrue(str_contains($fragmentSource, "if (preg_match('/^tgp_fg_self_(\\d+)$/', \$datain, \$m))"), 'Self-recipient callback is missing.');
+expectTrue(
+    strpos($productsSource, "telegramFragmentHandleUserRequest())") < strpos($productsSource, "step('home', \$from_id);", strpos($productsSource, 'function telegramProductsHandleRequestInternal')),
+    'The generic virtual-services dispatcher clears the Fragment recipient state before handling it.'
+);
 foreach ([
     '5814643080283821212', '5172632227871196306', '5134202243486057363',
     '5120722716260828125', '5931328859155733422', '5231012545799666522',
