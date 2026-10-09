@@ -184,7 +184,7 @@ final class FragmentLive
     private static function mapError(string $e): FragmentError
     {
         $l = strtolower($e);
-        return match (true) {
+        $mapped = match (true) {
             str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'not found') => new FragmentError('user_not_found', 'گیرنده پیدا نشد.'),
             str_contains($l, 'already subscribed') || (str_contains($l, 'already') && str_contains($l, 'premium')) => new FragmentError('already_premium', 'این حساب هم‌اکنون پریمیوم دارد.'),
             str_contains($l, 'not eligible') || str_contains($l, 'cannot receive premium') || str_contains($l, "can't receive premium") || str_contains($l, 'cannot be gifted') => new FragmentError('premium_unavailable', 'این حساب در حال حاضر امکان دریافت هدیه پریمیوم را ندارد.'),
@@ -194,6 +194,10 @@ final class FragmentLive
             str_contains($l, 'bad request') => new FragmentError('bad_request', 'Fragment درخواست را نپذیرفت.', true),
             default => new FragmentError('fragment_error', 'Fragment نتوانست درخواست را پردازش کند.'),
         };
+        // متن اصلی Fragment فقط برای گزارش مدیر به پیام اضافه می‌شود؛ پیام کاربر از روی کد خطا ساخته می‌شود.
+        $original = mb_substr(preg_replace('#https?://\S+#i', '[url]', $e), 0, 200);
+        return $original === '' ? $mapped : new FragmentError($mapped->errCode, $mapped->getMessage() . ' [Fragment: ' . $original . ']', $mapped->retryable);
+
     }
 
     /* ---------- سرویس امضای TON ---------- */
@@ -210,8 +214,12 @@ final class FragmentLive
         }
         $d = json_decode($r['body'], true);
         if ($r['status'] >= 400 || !is_array($d)) {
+            // دلیل واقعی سرویس امضا (موجودی ولت، سقف تراکنش، toncenter...) فقط در لاگ سرور ثبت می‌شود؛ متن آن محرمانه نیست.
+            $detail = is_array($d) && isset($d['error']) ? self::clean($d['error']) : mb_substr(trim(strip_tags((string) $r['body'])), 0, 200);
+            error_log('fragment signer ' . $method . ' ' . preg_replace('/\?.*$/', '', $path) . ' HTTP ' . $r['status'] . ': ' . mb_substr($detail, 0, 300));
             $code = in_array($r['status'], [401, 403], true) ? 'signer_auth' : 'signer_error';
             $message = $code === 'signer_auth' ? 'ارتباط امن سرویس پردازش نیازمند بازبینی است.' : 'سرویس پردازش تراکنش پاسخ معتبر نداد.';
+            if ($detail !== '') $message .= ' [Signer HTTP ' . $r['status'] . ': ' . mb_substr($detail, 0, 300) . ']';
             throw new FragmentError($code, $message, $r['status'] >= 500 || $r['status'] === 503);
         }
         return $d;

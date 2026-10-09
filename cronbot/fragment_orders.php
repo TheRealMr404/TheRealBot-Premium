@@ -23,5 +23,9 @@ try {
     }
 } catch (Throwable $e) {
     error_log('Fragment cron worker failed: ' . $e->getMessage());
+    try {
+        telegramFragmentReportError('خطا در کارگر خرید خودکار', $e, null, 'پردازش سفارش‌های Fragment متوقف شد', 'cron_failed', 900);
+    } catch (Throwable $ignored) {
+    }
     exit(1);
 }

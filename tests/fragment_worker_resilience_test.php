@@ -47,4 +47,7 @@ expectTrue(strpos($worker, 'telegramFragmentProcessPendingOrders(5)') < strpos($
 // An expired transaction must be resendable.
 expectTrue(strpos($kit, "\$e->errCode === 'tx_failed'") !== false && strpos($kit, 'tx_hash = NULL') !== false, 'An expired transaction can never be resent.');
 
+// Failures are reported with full technical detail to the group's error topic (like config-creation errors).
+expectTrue(strpos($fragment, 'function telegramFragmentReportError') !== false && strpos($fragment, "report='errorreport'") !== false, 'Fragment failures are not reported to the group error topic.');
+
 echo "fragment worker resilience tests: OK\n";
