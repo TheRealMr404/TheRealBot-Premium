@@ -1247,11 +1247,6 @@ function telegramProductsHandleRequestInternal()
         telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id]);
     }
 
-    $isFeatureContinuation = preg_match('/^tgp_form(opt|skip)_/', $datain) === 1;
-    if ($isFeatureStep && $datain !== '' && !$isFeatureContinuation) {
-        step('home', $from_id);
-        $user['step'] = 'home';
-    }
     if (function_exists('telegramFragmentHandleUserRequest') && telegramFragmentHandleUserRequest()) {
         return true;
     }
@@ -1260,6 +1255,11 @@ function telegramProductsHandleRequestInternal()
     }
     if (function_exists('telegramProductsFeatureUserHandle') && telegramProductsFeatureUserHandle()) {
         return true;
+    }
+    $isFeatureContinuation = preg_match('/^tgp_form(opt|skip)_/', $datain) === 1;
+    if ($isFeatureStep && $datain !== '' && !$isFeatureContinuation) {
+        step('home', $from_id);
+        $user['step'] = 'home';
     }
 
     if (telegramProductsAdminCommand($text)) {

@@ -340,8 +340,11 @@ function telegramFragmentButton($text, $callbackData, $style = 'primary', $emoji
 
 function telegramFragmentUserIcon($emojiId, $fallback)
 {
-    if (!telegramProductsActorIsPremium()) return '';
-    return '<tg-emoji emoji-id="' . $emojiId . '">' . $fallback . '</tg-emoji> ';
+    $emojiId = preg_replace('/\D/', '', (string) $emojiId);
+    $fallback = trim(strip_tags((string) $fallback));
+    if ($emojiId === '') return $fallback === '' ? '' : $fallback . ' ';
+    if ($fallback === '') $fallback = '✅';
+    return '<tg-emoji emoji-id="' . $emojiId . '">' . telegramFragmentEscape($fallback) . '</tg-emoji> ';
 }
 
 function telegramFragmentPriceFromQuote($totalTon, $tonTomanRate, $profitPercent, $fixedProfit, $rounding)
@@ -595,18 +598,45 @@ function telegramFragmentShowProduct($id)
     telegramProductsReply($text, json_encode(['inline_keyboard' => $rows], JSON_UNESCAPED_UNICODE));
 }
 
+function telegramFragmentNormalizeRecipient($value)
+{
+    $value = html_entity_decode(strip_tags((string) $value), ENT_QUOTES | ENT_HTML5, 'UTF-8');
+    $value = trim(preg_replace('/[\x{200B}-\x{200D}\x{FEFF}]/u', '', $value));
+    if (preg_match('~^(?:https?://)?(?:www\.)?(?:t\.me|telegram\.me)/@?([a-z][a-z0-9_]{4,31})(?:[/?#].*)?$~i', $value, $match)) {
+        $value = $match[1];
+    } else {
+        $value = ltrim($value, '@');
+    }
+    $value = strtolower($value);
+    if (in_array($value, ['', 'none', 'not_username', 'null', 'undefined'], true)) return '';
+    return preg_match('/^[a-z][a-z0-9_]{4,31}$/', $value) ? $value : '';
+}
+
 function telegramFragmentCurrentUsername()
 {
-    global $username, $user;
+    global $pdo, $from_id, $username, $user, $update;
 
-    $candidates = [$username ?? '', is_array($user) ? ($user['username'] ?? '') : ''];
+    $candidates = [];
+    if (is_array($update)) {
+        $candidates[] = $update['callback_query']['from']['username']
+            ?? $update['message']['from']['username']
+            ?? $update['edited_message']['from']['username']
+            ?? '';
+    }
+    $candidates[] = $username ?? '';
+    $candidates[] = is_array($user) ? ($user['username'] ?? '') : '';
     foreach ($candidates as $candidate) {
-        $candidate = strtolower(ltrim(trim((string) $candidate), '@'));
-        if (in_array($candidate, ['', 'none', 'not_username', 'null', '0'], true)) {
-            continue;
-        }
-        if (preg_match('/^[a-z][a-z0-9_]{4,31}$/', $candidate)) {
-            return $candidate;
+        $candidate = telegramFragmentNormalizeRecipient($candidate);
+        if ($candidate !== '') return $candidate;
+    }
+    if (isset($pdo, $from_id) && $from_id !== '') {
+        try {
+            $stmt = $pdo->prepare('SELECT username FROM user WHERE id=? LIMIT 1');
+            $stmt->execute([(string) $from_id]);
+            $candidate = telegramFragmentNormalizeRecipient($stmt->fetchColumn());
+            if ($candidate !== '') return $candidate;
+        } catch (Throwable $e) {
+            telegramFragmentLogFailure('recipient lookup', $e);
         }
     }
     return '';
@@ -754,9 +784,9 @@ function telegramFragmentCreateDraft($productId, $recipient, $customAmount = nul
         return false;
     }
     if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return false;
-    $recipient = strtolower(ltrim(trim((string) $recipient), '@'));
-    if (!preg_match('/^[a-z][a-z0-9_]{4,31}$/', $recipient)) {
-        telegramProductsReply("<b>نام کاربری معتبر نیست</b>\n\nدوباره بفرستید. نمونه: <code>username</code>", null);
+    $recipient = telegramFragmentNormalizeRecipient($recipient);
+    if ($recipient === '') {
+        telegramProductsReply("<b>نام کاربری معتبر نیست</b>\n\nیوزرنیم را بدون @ یا به‌شکل <code>@username</code> و <code>t.me/username</code> ارسال کنید.", null);
         return false;
     }
     if ($product === null) {
