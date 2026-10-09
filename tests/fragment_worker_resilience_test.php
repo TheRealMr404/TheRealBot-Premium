@@ -50,4 +50,11 @@ expectTrue(strpos($kit, "\$e->errCode === 'tx_failed'") !== false && strpos($kit
 // Failures are reported with full technical detail to the group's error topic (like config-creation errors).
 expectTrue(strpos($fragment, 'function telegramFragmentReportError') !== false && strpos($fragment, "report='errorreport'") !== false, 'Fragment failures are not reported to the group error topic.');
 
+// Premium must look up the recipient before the page state call (same order as the working Fragment kit).
+$live = file_get_contents($root . '/fragment-kit/php/FragmentLive.php');
+$quoteStart = strpos($live, 'private static function quote(');
+$quote = substr($live, $quoteStart, 1500);
+expectTrue(strpos($quote, 'self::find(') !== false && strpos($quote, 'self::find(') < strpos($quote, 'self::pageState('), 'Fragment page state is called before the recipient lookup.');
+expectTrue(strpos($quote, "\$kind === 'premium'") === false || strpos($quote, "\$kind === 'premium'") > strpos($quote, 'initGiftPremiumRequest') - 10, 'Premium has a special pre-lookup branch again.');
+
 echo "fragment worker resilience tests: OK\n";

@@ -167,6 +167,7 @@ final class FragmentLive
                 $safeError = preg_replace('#https?://\S+#i', '[url]', $safeError);
                 $safeError = preg_replace('/\b[A-Za-z0-9_\-]{32,}\b/', '[redacted]', (string) $safeError);
                 error_log('fragment api [' . preg_replace('/[^A-Za-z0-9_]/', '', $method) . ']: ' . mb_substr((string) $safeError, 0, 300));
+                $d['_method'] = $method;   // نام مرحله‌ای که خطا داده؛ فقط برای گزارش مدیر
             }
             return $d;
         }
@@ -177,17 +178,17 @@ final class FragmentLive
     {
         if (!empty($d['need_ton'])) throw new FragmentError('session_expired', 'ولت در Fragment وصل نیست یا نشست منقضی شده است؛ دکمه «ورود خودکار Fragment» را بزنید.');
         if (!empty($d['need_verify'])) throw new FragmentError('need_verify', 'فرگمنت تأیید اضافه (ورود تلگرام یا اتصال ولت) می‌خواهد؛ یک‌بار آن را دستی در مرورگر انجام دهید.');
-        if (isset($d['error'])) throw self::mapError(trim(html_entity_decode(strip_tags((string) $d['error']), ENT_QUOTES | ENT_HTML5, 'UTF-8')));
+        if (isset($d['error'])) throw self::mapError(trim(html_entity_decode(strip_tags((string) $d['error']), ENT_QUOTES | ENT_HTML5, 'UTF-8')), (string) ($d['_method'] ?? ''));
         return $d;
     }
 
-    private static function mapError(string $e): FragmentError
+    private static function mapError(string $e, string $method = ""): FragmentError
     {
         $l = strtolower($e);
         $mapped = match (true) {
             str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'not found') => new FragmentError('user_not_found', 'گیرنده پیدا نشد.'),
             str_contains($l, 'already subscribed') || (str_contains($l, 'already') && str_contains($l, 'premium')) => new FragmentError('already_premium', 'این حساب هم‌اکنون پریمیوم دارد.'),
-            str_contains($l, 'not eligible') || str_contains($l, 'cannot receive premium') || str_contains($l, "can't receive premium") || str_contains($l, 'cannot be gifted') => new FragmentError('premium_unavailable', 'این حساب در حال حاضر امکان دریافت هدیه پریمیوم را ندارد.'),
+            str_contains($l, 'not eligible') || str_contains($l, 'cannot receive premium') || str_contains($l, "can't receive premium") || str_contains($l, 'cannot be gifted') || str_contains($l, "can't be gifted") || str_contains($l, "can't gift") || str_contains($l, 'cannot gift') => new FragmentError('premium_unavailable', 'این حساب در حال حاضر امکان دریافت هدیه پریمیوم را ندارد.'),
             str_contains($l, 'invalid month') || str_contains($l, 'invalid duration') => new FragmentError('invalid_months', 'مدت اشتراک پریمیوم معتبر نیست.'),
             str_contains($l, 'too many') || str_contains($l, 'flood') => new FragmentError('rate_limit', 'Fragment موقتاً درخواست‌ها را محدود کرده است.', true),
             str_contains($l, 'access denied') => new FragmentError('session_expired', 'نشست Fragment نیازمند تمدید است.'),
@@ -195,7 +196,7 @@ final class FragmentLive
             default => new FragmentError('fragment_error', 'Fragment نتوانست درخواست را پردازش کند.'),
         };
         // متن اصلی Fragment فقط برای گزارش مدیر به پیام اضافه می‌شود؛ پیام کاربر از روی کد خطا ساخته می‌شود.
-        $original = mb_substr(preg_replace('#https?://\S+#i', '[url]', $e), 0, 200);
+        $original = mb_substr(preg_replace('#https?://\S+#i', '[url]', $e), 0, 200) . ($method !== '' ? ' @' . preg_replace('/[^A-Za-z0-9_]/', '', $method) : '');
         return $original === '' ? $mapped : new FragmentError($mapped->errCode, $mapped->getMessage() . ' [Fragment: ' . $original . ']', $mapped->retryable);
 
     }
@@ -426,16 +427,10 @@ final class FragmentLive
         $amount = self::amountParams($kind, $p);
         $pm = self::paymentMethod();
         return self::withSession($kind, function (array $page) use ($kind, $u, $amount, $pm) {
-            // Fragment's current Premium page requires its state to be
-            // initialised before recipient lookup. Stars remains on its
-            // established order because that flow is already stable.
-            if ($kind === 'premium') {
-                self::check(self::pageState($page, $kind));
-                $f = self::find($page, $kind, $u, $amount);
-            } else {
-                $f = self::find($page, $kind, $u, $amount);
-                self::check(self::pageState($page, $kind));
-            }
+            // همان ترتیبِ مرورگر و کیت آزموده‌شده برای هر دو محصول: اول جست‌وجوی گیرنده، بعد وضعیت صفحه.
+            // (فراخوانی وضعیت پیش از جست‌وجوی پریمیوم باعث خطای «You can't gift Telegram Premium» می‌شد.)
+            $f =self::find($page, $kind, $u, $amount);
+            self::pageState($page, $kind);   // پاسخ این مرحله فقط همگام‌سازی نشست است و خطایش خرید را متوقف نمی‌کند
             $init = self::check(self::api($page, $kind === 'stars' ? 'initBuyStarsRequest' : 'initGiftPremiumRequest', ['recipient' => $f['recipient']] + $amount + ['payment_method' => $pm]));
             $reqId = (string) ($init['req_id'] ?? '');
             // فرگمنت مبلغ‌های بزرگ را با جداکننده‌ی هزارگان می‌فرستد (مثل «1,000.5»)
