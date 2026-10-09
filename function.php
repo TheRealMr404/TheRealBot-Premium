@@ -360,12 +360,8 @@ function update($table, $field, $newValue, $whereField = null, $whereValue = nul
 
     $valueToStore = normaliseUpdateValue($newValue);
 
-    ensureColumnExistsForUpdate($table, $field, $valueToStore);
-
     $executeUpdate = function ($value) use ($pdo, $table, $field, $whereField, $whereValue) {
         if ($whereField !== null) {
-            $stmt = $pdo->prepare("SELECT $field FROM $table WHERE $whereField = ? FOR UPDATE");
-            $stmt->execute([$whereValue]);
             $stmt = $pdo->prepare("UPDATE $table SET $field = ? WHERE $whereField = ?");
             $stmt->execute([$value, $whereValue]);
         } else {
@@ -377,7 +373,10 @@ function update($table, $field, $newValue, $whereField = null, $whereValue = nul
     try {
         $executeUpdate($valueToStore);
     } catch (PDOException $e) {
-        if (strpos($e->getMessage(), 'Incorrect string value') !== false) {
+        if ((int) ($e->errorInfo[1] ?? 0) === 1054 || $e->getCode() === '42S22') {
+            ensureColumnExistsForUpdate($table, $field, $valueToStore);
+            $executeUpdate($valueToStore);
+        } elseif (strpos($e->getMessage(), 'Incorrect string value') !== false) {
             $tableConverted = ensureTableUtf8mb4($table);
             if ($tableConverted) {
                 try {
@@ -398,17 +397,29 @@ function update($table, $field, $newValue, $whereField = null, $whereValue = nul
         }
     }
 
-    $date = date("Y-m-d H:i:s");
-    if (!isset($user['step'])) {
-        $user['step'] = '';
-    }
-    $logValue = is_scalar($valueToStore) ? $valueToStore : json_encode($valueToStore, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-    $logss = "{$table}_{$field}_{$logValue}_{$whereField}_{$whereValue}_{$user['step']}_$date";
-    if ($field != "message_count" || $field != "last_message_time") {
-        file_put_contents('log.txt', "\n" . $logss, FILE_APPEND);
+    if (getenv('MIRZA_DEBUG_UPDATES') === '1' && !in_array($field, ['message_count', 'last_message_time'], true)) {
+        error_log('Database update: ' . $table . '.' . $field);
     }
 
     clearSelectCache($table);
+}
+
+function botRecordExists($table, $field, $value)
+{
+    global $pdo;
+    $allowed = [
+        'user' => ['id'],
+        'invoice' => ['id_invoice', 'username'],
+        'Discount' => ['code'],
+        'DiscountSell' => ['codeDiscount'],
+        'Payment_report' => ['price'],
+    ];
+    if (!isset($allowed[$table]) || !in_array($field, $allowed[$table], true)) {
+        throw new InvalidArgumentException('Unsupported existence lookup.');
+    }
+    $stmt = $pdo->prepare("SELECT 1 FROM `$table` WHERE `$field` = ? LIMIT 1");
+    $stmt->execute([$value]);
+    return $stmt->fetchColumn() !== false;
 }
 function &getSelectCacheStore()
 {
@@ -1846,12 +1857,20 @@ function registerPaymentGatewayButtons(array $items)
 function getPaymentGatewayAppearances($activeOnly = false)
 {
     global $pdo;
-    if (!ensurePaymentGatewayAppearanceTable()) {
+    if (!($pdo instanceof PDO)) {
         return [];
     }
     try {
-        $rows = $pdo->query('SELECT * FROM payment_gateway_appearance ORDER BY sort_order ASC, id ASC')
-            ->fetchAll(PDO::FETCH_ASSOC);
+        try {
+            $rows = $pdo->query('SELECT * FROM payment_gateway_appearance ORDER BY sort_order ASC, id ASC')
+                ->fetchAll(PDO::FETCH_ASSOC);
+        } catch (PDOException $e) {
+            if ((int) ($e->errorInfo[1] ?? 0) !== 1146 || !ensurePaymentGatewayAppearanceTable()) {
+                throw $e;
+            }
+            $rows = $pdo->query('SELECT * FROM payment_gateway_appearance ORDER BY sort_order ASC, id ASC')
+                ->fetchAll(PDO::FETCH_ASSOC);
+        }
         if (!$activeOnly) {
             return $rows;
         }
@@ -1957,7 +1976,7 @@ function movePaymentGatewayAppearance($id, $direction)
     }
 }
 
-function applyPaymentGatewayAppearance(array $rows, array $catalog = [])
+function applyPaymentGatewayAppearance(array $rows, array $catalog = [], $registerMissing = true)
 {
     $enabledCatalog = [];
     foreach (flattenPaymentGatewayButtons($catalog) as $button) {
@@ -1966,7 +1985,9 @@ function applyPaymentGatewayAppearance(array $rows, array $catalog = [])
         }
     }
     setActivePaymentGatewayButtons(array_merge($rows, $enabledCatalog));
-    registerPaymentGatewayButtons(array_merge($catalog, $rows));
+    if ($registerMissing) {
+        registerPaymentGatewayButtons(array_merge($catalog, $rows));
+    }
 
     $appearanceMap = [];
     foreach (getPaymentGatewayAppearances() as $appearance) {
@@ -2355,7 +2376,10 @@ function customServiceUsername($fromId, $panel, $user, $telegramUsername, $reque
 
     $generated = strtolower($generated);
     $remoteUser = $managePanel->DataUser($panel['name_panel'], $generated);
-    if (isset($remoteUser['username']) || in_array($generated, (array)$existingUsernames, true)) {
+    $alreadyUsed = $existingUsernames === null
+        ? botRecordExists('invoice', 'username', $generated)
+        : in_array($generated, (array) $existingUsernames, true);
+    if (isset($remoteUser['username']) || $alreadyUsed) {
         if (($panel['type'] ?? '') === 'pasarguard_reseller') {
             $generated = substr($generated, 0, 27) . '_' . bin2hex(random_bytes(2));
         } else {

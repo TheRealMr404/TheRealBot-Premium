@@ -10,10 +10,6 @@ if (!function_exists('getPaySettingValue')) {
     }
 }
 //-----------------------------[  text panel  ]-------------------------------
-$stmt = $pdo->prepare("SHOW TABLES LIKE 'textbot'");
-$stmt->execute();
-$result = $stmt->fetchAll();
-$table_exists = count($result) > 0;
 $datatextbot = array(
     'text_usertest' => '',
     'text_Purchased_services' => '',
@@ -49,22 +45,14 @@ $datatextbot = array(
     'textsnowpayment' => ''
 
 );
-if ($table_exists) {
-    $textdatabot = select("textbot", "*", null, null, "fetchAll");
-    $data_text_bot = array();
-    foreach ($textdatabot as $row) {
-        $data_text_bot[] = array(
-            'id_text' => $row['id_text'],
-            'text' => $row['text']
-        );
-    }
-    foreach ($data_text_bot as $item) {
-        if (isset($datatextbot[$item['id_text']])) {
-            $datatextbot[$item['id_text']] = $item['text'];
-        }
+$textdatabot = select("textbot", "*", null, null, "fetchAll");
+foreach ($textdatabot as $item) {
+    if (isset($datatextbot[$item['id_text']])) {
+        $datatextbot[$item['id_text']] = $item['text'];
     }
 }
 $adminrulecheck = select("admin", "*", "id_admin", $from_id, "select");
+$isAdminKeyboardRequest = $adminrulecheck !== null || (string) $from_id === (string) $adminnumber;
 if (!$adminrulecheck) {
     $adminrulecheck = array(
         'rule' => '',
@@ -339,25 +327,37 @@ $setting_panel = json_encode([
     ],
     'resize_keyboard' => true
 ]);
-$PaySettingcard = getPaySettingValue("Cartstatus");
-$PaySettingnow = getPaySettingValue("nowpaymentstatus");
-$PaySettingaqayepardakht = getPaySettingValue("statusaqayepardakht");
-$PaySettingpv = getPaySettingValue("Cartstatuspv");
-$usernamecart = getPaySettingValue("CartDirect");
-$Swapino = getPaySettingValue("statusSwapWallet");
-$trnadoo = getPaySettingValue("statustarnado");
-$paymentverify = getPaySettingValue("checkpaycartfirst");
-$stmt = $pdo->prepare("SELECT * FROM Payment_report WHERE id_user = '$from_id' AND payment_Status = 'paid' ");
-$stmt->execute();
-$paymentexits = $stmt->rowCount();
-$zarinpal = getPaySettingValue("zarinpalstatus");
-$affilnecurrency = getPaySettingValue("digistatus");
-$arzireyali3 = getPaySettingValue("statusiranpay3");
-$paymentstatussnotverify = getPaySettingValue("paymentstatussnotverify");
-$paymentsstartelegram = getPaySettingValue("statusstar");
-$payment_status_nowpayment = getPaySettingValue("statusnowpayment");
-$statusabangateway = getPaySettingValue("statusabangateway");
-$statuscubepay = getPaySettingValue("statuscubepay");
+$paymentSettingNames = [
+    'Cartstatus', 'nowpaymentstatus', 'statusaqayepardakht', 'Cartstatuspv',
+    'CartDirect', 'statusSwapWallet', 'statustarnado', 'checkpaycartfirst',
+    'zarinpalstatus', 'digistatus', 'statusiranpay3', 'paymentstatussnotverify',
+    'statusstar', 'statusnowpayment', 'statusabangateway', 'statuscubepay',
+];
+$paymentSettingQuery = $pdo->prepare('SELECT NamePay, ValuePay FROM PaySetting WHERE NamePay IN (' . implode(',', array_fill(0, count($paymentSettingNames), '?')) . ')');
+$paymentSettingQuery->execute($paymentSettingNames);
+$paymentSettingValues = $paymentSettingQuery->fetchAll(PDO::FETCH_KEY_PAIR);
+$PaySettingcard = $paymentSettingValues['Cartstatus'] ?? null;
+$PaySettingnow = $paymentSettingValues['nowpaymentstatus'] ?? null;
+$PaySettingaqayepardakht = $paymentSettingValues['statusaqayepardakht'] ?? null;
+$PaySettingpv = $paymentSettingValues['Cartstatuspv'] ?? null;
+$usernamecart = $paymentSettingValues['CartDirect'] ?? null;
+$Swapino = $paymentSettingValues['statusSwapWallet'] ?? null;
+$trnadoo = $paymentSettingValues['statustarnado'] ?? null;
+$paymentverify = $paymentSettingValues['checkpaycartfirst'] ?? null;
+$zarinpal = $paymentSettingValues['zarinpalstatus'] ?? null;
+$affilnecurrency = $paymentSettingValues['digistatus'] ?? null;
+$arzireyali3 = $paymentSettingValues['statusiranpay3'] ?? null;
+$paymentstatussnotverify = $paymentSettingValues['paymentstatussnotverify'] ?? null;
+$paymentsstartelegram = $paymentSettingValues['statusstar'] ?? null;
+$payment_status_nowpayment = $paymentSettingValues['statusnowpayment'] ?? null;
+$statusabangateway = $paymentSettingValues['statusabangateway'] ?? null;
+$statuscubepay = $paymentSettingValues['statuscubepay'] ?? null;
+$paymentexits = 0;
+if ($paymentverify === 'onpayverify' || $arzireyali3 === 'oniranpay3') {
+    $stmt = $pdo->prepare("SELECT COUNT(*) FROM Payment_report WHERE id_user = ? AND payment_Status = 'paid'");
+    $stmt->execute([$from_id]);
+    $paymentexits = (int) $stmt->fetchColumn();
+}
 $aban_text_query = select("textbot", "text", "id_text", "abangateway", "select");
 $aban_gateway_title = !empty($aban_text_query['text']) ? $aban_text_query['text'] : 'آبان‌پی';
 $cubepay_row = select("textbot", "text", "id_text", "cubepay", "select");
@@ -458,7 +458,8 @@ $payment_gateway_catalog = [
 ];
 $step_payment['inline_keyboard'] = applyPaymentGatewayAppearance(
     $step_payment['inline_keyboard'],
-    $payment_gateway_catalog
+    $payment_gateway_catalog,
+    $isAdminKeyboardRequest
 );
 $step_payment = json_encode($step_payment);
 $keyboardhelpadmin = json_encode([
@@ -557,6 +558,7 @@ $backadmin = json_encode([
     'resize_keyboard' => true,
     'input_field_placeholder' => "برای بازگشت روی دکمه زیر کلیک کنید"
 ]);
+if ($isAdminKeyboardRequest) {
 //------------------  [ list panel ]----------------//
 $stmt = $pdo->prepare("SHOW TABLES LIKE 'marzban_panel'");
 $stmt->execute();
@@ -676,7 +678,10 @@ if ($table_exists) {
     ];
     $json_list_helpkey = json_encode($help_arrke);
 }
+}
 //------------------  [ help list ]----------------//
+if ($setting['categoryhelp'] == '1'
+    && ($text == $datatextbot['text_help'] || in_array($text, ['/help', 'help'], true) || in_array($datain, ['helpbtn', 'helpbtns'], true))) {
 $stmt = $pdo->prepare("SELECT * FROM help");
 $stmt->execute();
 $helpcwtgory = ['inline_keyboard' => []];
@@ -700,9 +705,11 @@ $helpcwtgory['inline_keyboard'][] = [
     ['text' => $textbotlang['users']['backbtn'], 'callback_data' => "backuser", 'style' => 'danger', 'icon_custom_emoji_id' => 5258236805890710909],
 ];
 $json_list_helpـcategory = json_encode($helpcwtgory);
+}
 
 
 //------------------  [ help app ]----------------//
+if ($datain === 'linkappdownlod' || $isAdminKeyboardRequest) {
 $stmt = $pdo->prepare("SELECT * FROM app");
 $stmt->execute();
 $helpapp = ['inline_keyboard' => []];
@@ -728,25 +735,37 @@ $helpappremove['keyboard'][] = [
     ['text' => $textbotlang['Admin']['backadmin']],
 ];
 $json_list_remove_helpـlink = json_encode($helpappremove);
+}
 //------------------  [ listpanelusers ]----------------//
 $stmt = $pdo->prepare("SELECT * FROM marzban_panel WHERE status = 'active' AND (agent = :agent OR agent = 'all')");
 $stmt->bindParam(':agent', $users['agent']);
 $stmt->execute();
+$activeUserPanels = $stmt->fetchAll(PDO::FETCH_ASSOC);
+$manualPanelCodes = [];
+foreach ($activeUserPanels as $panel) {
+    if ($panel['type'] === 'Manualsale') {
+        $manualPanelCodes[] = (string) $panel['code_panel'];
+    }
+}
+$availableManualPanels = [];
+if ($manualPanelCodes) {
+    $manualPanelCodes = array_values(array_unique($manualPanelCodes));
+    $stockQuery = $pdo->prepare("SELECT DISTINCT codepanel FROM manualsell WHERE status = 'active' AND codepanel IN (" . implode(',', array_fill(0, count($manualPanelCodes), '?')) . ')');
+    $stockQuery->execute($manualPanelCodes);
+    foreach ($stockQuery->fetchAll(PDO::FETCH_COLUMN) as $codePanel) {
+        $availableManualPanels[strtolower((string) $codePanel)] = true;
+    }
+}
 $list_marzban_panel_users = ['inline_keyboard' => []];
-$panelcount = select("marzban_panel", "*", "status", "active", "count");
+$panelcount = (int) $pdo->query("SELECT COUNT(*) FROM marzban_panel WHERE status = 'active'")->fetchColumn();
 
 if ($panelcount > 10) {
     $temp_row = [];
-    while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    foreach ($activeUserPanels as $result) {
         if ($result['hide_user'] != null && in_array($from_id, json_decode($result['hide_user'], true)))
             continue;
-        if ($result['type'] == "Manualsale") {
-            $stmtManual = $pdo->prepare("SELECT * FROM manualsell WHERE codepanel = :codepanel AND status = 'active'");
-            $stmtManual->bindParam(':codepanel', $result['code_panel']);
-            $stmtManual->execute();
-            if (intval($stmtManual->rowCount()) == 0)
-                continue;
-        }
+        if ($result['type'] == "Manualsale" && !isset($availableManualPanels[strtolower((string) $result['code_panel'])]))
+            continue;
 
         // استخراج رنگ و ایموجی پرمیوم داینامیک از دیتابیس
         $btn = [
@@ -777,14 +796,9 @@ if ($panelcount > 10) {
         $list_marzban_panel_users['inline_keyboard'][] = $temp_row;
     }
 } else {
-    while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
-        if ($result['type'] == "Manualsale") {
-            $stmts = $pdo->prepare("SELECT * FROM manualsell WHERE codepanel = :codepanel AND status = 'active'");
-            $stmts->bindParam(':codepanel', $result['code_panel']);
-            $stmts->execute();
-            if (intval($stmts->rowCount()) == 0)
-                continue;
-        }
+    foreach ($activeUserPanels as $result) {
+        if ($result['type'] == "Manualsale" && !isset($availableManualPanels[strtolower((string) $result['code_panel'])]))
+            continue;
         if ($result['hide_user'] != null && in_array($from_id, json_decode($result['hide_user'], true)))
             continue;
 
@@ -830,11 +844,8 @@ $list_marzban_panel_user = json_encode($list_marzban_panel_users);
 
 
 //------------------  [ listpanelusers omdhe ]----------------//
-$stmt = $pdo->prepare("SELECT * FROM marzban_panel WHERE status = 'active' AND (agent = :agent OR agent = 'all')");
-$stmt->bindParam(':agent', $users['agent']);
-$stmt->execute();
 $list_marzban_panel_users_om = ['inline_keyboard' => []];
-while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+foreach ($activeUserPanels as $result) {
     if ($result['hide_user'] != null and in_array($from_id, json_decode($result['hide_user'], true)))
         continue;
     $list_marzban_panel_users_om['inline_keyboard'][] = [
@@ -847,13 +858,12 @@ $list_marzban_panel_users_om['inline_keyboard'][] = [
 $list_marzban_panel_userom = json_encode($list_marzban_panel_users_om);
 
 //------------------  [ change location ]----------------//
-$stmt = $pdo->prepare("SELECT * FROM marzban_panel WHERE status = 'active' AND (agent = '{$users['agent']}' OR agent = 'all') AND name_panel != '{$users['Processing_value_four']}'");
-$stmt->execute();
 $list_marzban_panel_users_change = ['inline_keyboard' => []];
-$panelcount = select("marzban_panel", "*", "status", "active", "count");
 if ($panelcount > 10) {
     $temp_row = [];
-    while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    foreach ($activeUserPanels as $result) {
+        if ($result['name_panel'] == $users['Processing_value_four'])
+            continue;
         if ($result['hide_user'] != null && in_array($from_id, json_decode($result['hide_user'], true)))
             continue;
 
@@ -867,7 +877,9 @@ if ($panelcount > 10) {
         $list_marzban_panel_users_change['inline_keyboard'][] = $temp_row;
     }
 } else {
-    while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
+    foreach ($activeUserPanels as $result) {
+        if ($result['name_panel'] == $users['Processing_value_four'])
+            continue;
         if ($result['hide_user'] != null and in_array($from_id, json_decode($result['hide_user'], true)))
             continue;
         $list_marzban_panel_users_change['inline_keyboard'][] = [
@@ -882,8 +894,8 @@ $list_marzban_panel_userschange = json_encode($list_marzban_panel_users_change);
 
 
 //------------------  [ listpanelusers test ]----------------//
-$stmt = $pdo->prepare("SELECT * FROM marzban_panel WHERE TestAccount = 'ONTestAccount' AND (agent = '{$users['agent']}' OR agent = 'all')");
-$stmt->execute();
+$stmt = $pdo->prepare("SELECT * FROM marzban_panel WHERE TestAccount = 'ONTestAccount' AND (agent = :agent OR agent = 'all')");
+$stmt->execute([':agent' => $users['agent']]);
 $list_marzban_panel_usertest = ['inline_keyboard' => []];
 
 while ($result = $stmt->fetch(PDO::FETCH_ASSOC)) {
@@ -931,6 +943,7 @@ $textbot = json_encode([
     ],
     'resize_keyboard' => true
 ]);
+if ($isAdminKeyboardRequest) {
 //--------------------------------------------------
 $stmt = $pdo->prepare("SHOW TABLES LIKE 'protocol'");
 $stmt->execute();
@@ -1054,6 +1067,7 @@ if ($table_exists) {
         ];
     }
     $json_list_Discount_list_admin_sell = json_encode($list_Discountsell);
+}
 }
 $payment = json_encode([
     'inline_keyboard' => [
@@ -1611,6 +1625,7 @@ $supportcenter = json_encode([
     'resize_keyboard' => true
 ]);
 //------------------  [ list departeman ]----------------//
+if ($isAdminKeyboardRequest) {
 $stmt = $pdo->prepare("SHOW TABLES LIKE 'departman'");
 $stmt->execute();
 $result = $stmt->fetchAll();
@@ -1637,7 +1652,9 @@ if ($table_exists) {
     ];
     $departemanslist = json_encode($departemans);
 }
+}
 // list departeman
+if ($datain === 'support') {
 $list_departman = ['inline_keyboard' => []];
 $stmt = $pdo->prepare("SELECT * FROM departman");
 $stmt->execute();
@@ -1650,6 +1667,7 @@ $list_departman['inline_keyboard'][] = [
     ['text' => $textbotlang['users']['backbtn'], 'callback_data' => "backuser", 'style' => 'danger', 'icon_custom_emoji_id' => 5258236805890710909],
 ];
 $list_departman = json_encode($list_departman);
+}
 $active_panell = json_encode([
     'keyboard' => [
         [['text' => "📣 گزارشات ربات"]],

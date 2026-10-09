@@ -2314,9 +2314,40 @@ volumes:
   db_data:
     name: mirza-$slug-db-data
 EOF
+    docker_prepare_inapp_backup_runtime "$dir" || return 1
     chown -R 33:33 "$dir/app"
     mkdir -p "$dir/updater-backups"
     chmod 700 "$dir/updater-backups"
+}
+
+docker_prepare_inapp_backup_runtime() {
+    local dir="$1" dockerfile="$1/Dockerfile"
+    [ -f "$dockerfile" ] || return 1
+    grep -q '^FROM php:.*-apache' "$dockerfile" || { echo "Unsupported app Dockerfile; backup runtime was not changed."; return 1; }
+
+    cat > "$dir/container-start.sh" <<'EOF'
+#!/bin/sh
+set -eu
+slug=${MIRZA_DOCKER_INSTANCE:-main}
+minute=$(printf '%s' "$slug" | cksum | awk '{print $1}')
+minute=$((minute % 60))
+printf '* * * * * www-data /usr/bin/flock -n /run/lock/mirza-fragment.lock php /var/www/html/cronbot/fragment_orders.php >/dev/null 2>&1\n' > /etc/cron.d/mirza-fragment
+printf 'MIRZA_DOCKER_INSTANCE=%s\n%s */5 * * * root /usr/bin/flock -n /run/lock/mirza-backup.lock php /var/www/html/cronbot/backupbot.php >> /var/log/mirza-backup.log 2>&1\n' "$slug" "$minute" > /etc/cron.d/mirza-backup
+chmod 0644 /etc/cron.d/mirza-fragment /etc/cron.d/mirza-backup
+cron
+exec apache2-foreground
+EOF
+    chmod 0755 "$dir/container-start.sh"
+    if ! grep -q '^# mirza-backup-runtime-v1$' "$dockerfile"; then
+        cat >> "$dockerfile" <<'EOF'
+
+# mirza-backup-runtime-v1
+RUN apt-get update && apt-get install -y --no-install-recommends default-mysql-client && rm -rf /var/lib/apt/lists/*
+COPY container-start.sh /usr/local/sbin/mirza-start
+RUN chmod 0755 /usr/local/sbin/mirza-start
+CMD ["/usr/local/sbin/mirza-start"]
+EOF
+    fi
 }
 
 docker_wait_healthy() {
@@ -2626,6 +2657,7 @@ docker_bot_update() {
     valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
     dir=$(docker_instance_dir "$slug") || return 1
     [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    docker_prepare_inapp_backup_runtime "$dir" || return 1
     docker_install_healer || { echo "Failed to install the Docker service healer."; return 1; }
     update_url=$(docker_source_url) || return 1
     docker_write_container_updater "$dir" "$update_url" \
@@ -2680,6 +2712,7 @@ docker_bot_updater_refresh() {
     valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
     dir=$(docker_instance_dir "$slug") || return 1
     [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    docker_prepare_inapp_backup_runtime "$dir" || return 1
     container="mirza-$slug-app"
     docker inspect "$container" >/dev/null 2>&1 \
         || { echo "Application container '$container' was not found."; return 1; }
@@ -2712,6 +2745,7 @@ docker_bot_repair() {
     valid_bot_slug "$slug" || { echo "Invalid or missing --id."; return 1; }
     dir=$(docker_instance_dir "$slug") || return 1
     [ -f "$dir/.env" ] || { echo "Bot '$slug' not found."; return 1; }
+    docker_prepare_inapp_backup_runtime "$dir" || return 1
     docker_install_healer || return 1
     mkdir -p "$dir/updater-backups"
     printf 'requested_at=%s\nrebuild=1\n' "$(date -Is)" > "$dir/updater-backups/.repair-request"
@@ -2736,6 +2770,8 @@ docker_bot_schedule_backup() {
     fi
     manager="/usr/local/bin/mirza"
     [ -x "$manager" ] || { echo "Mirza manager command is missing."; return 1; }
+    systemctl is-active --quiet cron || systemctl enable --now cron >/dev/null 2>&1 \
+        || { echo "Host cron service is not running."; return 1; }
     minute=$(( $(printf '%s' "$slug" | cksum | awk '{print $1}') % 50 + 5 ))
     case "$schedule" in
         daily)  schedule="$minute 3 * * *" ;;

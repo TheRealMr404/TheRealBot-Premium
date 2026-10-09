@@ -4359,7 +4359,7 @@ $caption";
     sendmessage($from_id, $textbotlang['Admin']['Balance']['NegativeBalance'], $backadmin, 'HTML');
     step('Negative_Balance', $from_id);
 } elseif ($user['step'] == "Negative_Balance") {
-    if (!in_array($text, $users_ids)) {
+    if (!botRecordExists('user', 'id', $text)) {
         sendmessage($from_id, $textbotlang['Admin']['not-user'], $backadmin, 'HTML');
         return;
     }
@@ -4414,7 +4414,7 @@ $caption";
     } else {
         $id_user = $dataget[1];
     }
-    if (!in_array($id_user, $users_ids)) {
+    if (!botRecordExists('user', 'id', $id_user)) {
         sendmessage($from_id, $textbotlang['Admin']['not-user'], null, 'HTML');
         return;
     }
@@ -4624,7 +4624,7 @@ $text_expie_agent
     sendmessage($from_id, $textbotlang['Admin']['Discount']['RemoveCode'], $json_list_Discount_list_admin, 'HTML');
     step('remove-Discount', $from_id);
 } elseif ($user['step'] == "remove-Discount") {
-    if (!in_array($text, $code_Discount)) {
+    if (!botRecordExists('Discount', 'code', $text)) {
         sendmessage($from_id, $textbotlang['Admin']['Discount']['NotCode'], null, 'HTML');
         return;
     }
@@ -7290,7 +7290,7 @@ $iduser  در ربات  رفع مسدود گردید
     sendmessage($from_id, $textbotlang['Admin']['Discount']['RemoveCode'], $json_list_Discount_list_admin_sell, 'HTML');
     step('remove-Discountsell', $from_id);
 } elseif ($user['step'] == "remove-Discountsell") {
-    if (!in_array($text, $SellDiscount)) {
+    if (!botRecordExists('DiscountSell', 'codeDiscount', $text)) {
         sendmessage($from_id, $textbotlang['Admin']['Discount']['NotCode'], null, 'HTML');
         return;
     }
@@ -8729,7 +8729,7 @@ elseif ($datain == "back_to_admin_general" && in_array($from_id, $admin_ids)) {
         sendmessage($from_id, $textbotlang['users']['stateus']['Invalidusername'], $backuser, 'html');
         return;
     }
-    if (in_array($text, $usernameinvoice)) {
+    if (botRecordExists('invoice', 'username', $text)) {
         sendmessage($from_id, "❌ این نام کاربری از قبل داخل ربات وجود دارد.", null, 'HTML');
         return;
     }
@@ -11947,7 +11947,7 @@ f,n.n2", $backadmin, 'HTML');
     توجه داشتید باشید در کاربر مقصد در صورت داشتن موجودی حذف خواهد شد", $backadmin, 'HTML');
     step("getidfortransfers", $from_id);
 } elseif ($user['step'] == "getidfortransfers") {
-    if (!in_array($text, $users_ids)) {
+    if (!botRecordExists('user', 'id', $text)) {
         sendmessage($from_id, $textbotlang['Admin']['not-user'], $backadmin, 'HTML');
         return;
     }
@@ -14103,7 +14103,7 @@ if ($datain == "settimecornday" && $adminrulecheck['rule'] == "administrator") {
 } elseif ($user['step'] == "getlistidcart") {
     $list = explode("\n", $text);
     foreach ($list as $id_user) {
-        if (!in_array($id_user, $users_ids)) {
+        if (!botRecordExists('user', 'id', $id_user)) {
             sendmessage($from_id, "📌 کاربر با آیدی عددی $id_user در  دیتابیس وجود ندارد", $backadmin, 'HTML');
             continue;
         }
@@ -14589,7 +14589,7 @@ if ($datain == "settimecornday" && $adminrulecheck['rule'] == "administrator") {
     sendmessage($from_id, "📌 آیدی عددی کاربر را ارسال کنید", $backadmin, 'HTML');
     step("getidExceptio", $from_id);
 } elseif ($user['step'] == "getidExceptio") {
-    if (!in_array($text, $users_ids)) {
+    if (!botRecordExists('user', 'id', $text)) {
         sendmessage($from_id, "❌ کاربر وجود ندارد.", $backadmin, 'HTML');
         return;
     }
@@ -14608,7 +14608,7 @@ if ($datain == "settimecornday" && $adminrulecheck['rule'] == "administrator") {
     sendmessage($from_id, "📌 آیدی عددی کاربر را جهت حذف از لیست ارسال کنید", $backadmin, 'HTML');
     step("getidExceptioremove", $from_id);
 } elseif ($user['step'] == "getidExceptioremove") {
-    if (!in_array($text, $users_ids)) {
+    if (!botRecordExists('user', 'id', $text)) {
         sendmessage($from_id, "❌ کاربر وجود ندارد.", $backadmin, 'HTML');
         return;
     }
