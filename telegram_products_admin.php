@@ -501,6 +501,7 @@ function virtualServicesAdminSettings()
         [['text' => 'پیام تحویل خودکار', 'callback_data' => 'vsa_text_auto']],
         [['text' => 'پیام اتمام موجودی', 'callback_data' => 'vsa_text_stockout']],
         [['text' => 'پیام غیرفعال بودن', 'callback_data' => 'vsa_text_disabled']],
+        [['text' => 'متن‌های احراز هویت کامل', 'callback_data' => 'vsa_identity_texts']],
         [['text' => 'ساخت یا بازسازی تاپیک‌های گزارش', 'callback_data' => 'vsa_topics_rebuild']],
         [['text' => $enabled ? 'غیرفعال‌سازی کل بخش' : 'فعال‌سازی کل بخش', 'callback_data' => 'vsa_toggle']],
         [['text' => 'بازگشت', 'callback_data' => 'vsa_home']],

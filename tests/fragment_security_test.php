@@ -88,6 +88,7 @@ $installer = file_get_contents(dirname(__DIR__) . '/install.sh');
 $signerSource = file_get_contents(dirname(__DIR__) . '/services/fragment-signer/server.js');
 $adminSource = file_get_contents(dirname(__DIR__) . '/admin.php');
 $fragmentSource = file_get_contents(dirname(__DIR__) . '/telegram_fragment.php');
+$fragmentLiveSource = file_get_contents(dirname(__DIR__) . '/fragment-kit/php/FragmentLive.php');
 $rateWorkerSource = file_get_contents(dirname(__DIR__) . '/cronbot/fragment_orders.php');
 $virtualAdminSource = file_get_contents(dirname(__DIR__) . '/telegram_products_admin.php');
 expectTrue(str_contains($fragmentSource, 'https://apiv2.nobitex.ir/market/stats?srcCurrency=gram&dstCurrency=rls'), 'Nobitex stats must use the current API host.');
@@ -108,6 +109,13 @@ expectTrue(str_contains($fragmentSource, "'dryRun' => false"), 'Fragment purchas
 expectTrue(!str_contains($fragmentSource, "telegramFragmentSetting('dry_run'"), 'Legacy dry-run setting still affects execution.');
 expectTrue(str_contains($fragmentSource, 'tgp_fg_custom_stars') && str_contains($fragmentSource, 'stars_custom_min'), 'Custom Stars flow or limits are missing.');
 expectTrue(str_contains($fragmentSource, 'vsa_fg_pricing') && str_contains($fragmentSource, 'profit_percent_stars'), 'Live pricing admin controls are missing.');
+preg_match('/private static function quote\(.*?\/\* ---------- گیفت/s', $fragmentLiveSource, $premiumQuoteMatch);
+$premiumQuoteSource = $premiumQuoteMatch[0] ?? '';
+expectTrue(
+    strpos($premiumQuoteSource, "if (\$kind === 'premium')") < strpos($premiumQuoteSource, 'self::find($page, $kind, $u, $amount)'),
+    'Premium page state must be initialized before recipient lookup.'
+);
+expectTrue(str_contains($fragmentLiveSource, "fragment api ['"), 'Sanitized Fragment API diagnostics are missing.');
 expectTrue(str_contains($virtualAdminSource, 'vsa_section_catalog') && str_contains($virtualAdminSource, 'vsa_section_settings'), 'Virtual services admin sections are missing.');
 
 foreach (glob($dir . DIRECTORY_SEPARATOR . '*') ?: [] as $file) @unlink($file);

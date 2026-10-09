@@ -234,6 +234,8 @@ function telegramProductsEnsureSchema()
     telegramProductsEnsureColumn('telegram_products', 'product_mode', "VARCHAR(20) NOT NULL DEFAULT 'legacy' AFTER `delivery_type`");
     telegramProductsEnsureColumn('telegram_products', 'auth_mode', "VARCHAR(20) NOT NULL DEFAULT 'none' AFTER `product_mode`");
     telegramProductsEnsureColumn('telegram_product_identity', 'document_kind', 'VARCHAR(10) NULL AFTER document_file_id');
+    telegramProductsEnsureColumn('telegram_product_identity', 'card_photo_file_id', 'VARCHAR(255) NULL');
+    telegramProductsEnsureColumn('telegram_product_identity', 'card_photo_kind', 'VARCHAR(10) NULL');
     telegramProductsEnsureColumn('telegram_products', 'warranty_days', "INT UNSIGNED NOT NULL DEFAULT 0 AFTER `max_per_user`");
     telegramProductsEnsureColumn('telegram_products', 'max_resends', "INT UNSIGNED NOT NULL DEFAULT 1 AFTER `warranty_days`");
     // Older installations may already have these tables with an incomplete
@@ -273,6 +275,11 @@ function telegramProductsEnsureSchema()
         'pending_alert_hours' => '3',
         'daily_summary_enabled' => '1',
         'invoice_price_lock_minutes' => '10',
+        'identity_contact_text' => "<b>تأیید شماره همراه</b>\n\nبرای شروع احراز کامل، دکمه «ارسال شماره من» را بزنید. فقط شماره +98 متعلق به همین حساب تلگرام پذیرفته می‌شود.",
+        'identity_card_photo_text' => "<b>مرحله ۱ از ۴ - ارسال عکس کارت بانکی</b>\n\nیک عکس واضح از کارت بانکی متعلق به خودتان ارسال کنید. نام صاحب کارت و چهار رقم آخر کارت باید خوانا باشد؛ سایر ارقام را بپوشانید.",
+        'identity_commitment_photo_text' => "<b>مرحله ۲ از ۴ - ارسال فرم تعهد و مدرک</b>\n\nفرم تعهد را مطابق راهنمای مدیریت تکمیل کنید و تصویر واضح آن را همراه مدرک هویتی در یک قاب ارسال کنید.",
+        'identity_full_name_text' => "<b>مرحله ۳ از ۴ - نام و نام خانوادگی</b>\n\nنام و نام خانوادگی قانونی خود را دقیقاً مطابق مدرک هویتی ارسال کنید.",
+        'identity_national_id_text' => "<b>مرحله ۴ از ۴ - کد ملی</b>\n\nکد ملی ۱۰ رقمی خود را ارسال کنید. برای حفظ حریم خصوصی فقط چهار رقم آخر آن در پایگاه داده ربات نگهداری می‌شود.",
     ];
     $stmt = $pdo->prepare('INSERT IGNORE INTO telegram_product_settings (setting_key, setting_value) VALUES (?, ?)');
     foreach ($defaults as $key => $value) {

@@ -162,6 +162,12 @@ final class FragmentLive
                 self::page($kind);   // hash کهنه بود؛ از صفحه‌ی تازه گرفته و در کش ذخیره می‌شود
                 continue;
             }
+            if (!empty($d['error'])) {
+                $safeError = self::clean($d['error']);
+                $safeError = preg_replace('#https?://\S+#i', '[url]', $safeError);
+                $safeError = preg_replace('/\b[A-Za-z0-9_\-]{32,}\b/', '[redacted]', (string) $safeError);
+                error_log('fragment api [' . preg_replace('/[^A-Za-z0-9_]/', '', $method) . ']: ' . mb_substr((string) $safeError, 0, 300));
+            }
             return $d;
         }
     }
@@ -181,6 +187,8 @@ final class FragmentLive
         return match (true) {
             str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'not found') => new FragmentError('user_not_found', 'گیرنده پیدا نشد.'),
             str_contains($l, 'already subscribed') || (str_contains($l, 'already') && str_contains($l, 'premium')) => new FragmentError('already_premium', 'این حساب هم‌اکنون پریمیوم دارد.'),
+            str_contains($l, 'not eligible') || str_contains($l, 'cannot receive premium') || str_contains($l, "can't receive premium") || str_contains($l, 'cannot be gifted') => new FragmentError('premium_unavailable', 'این حساب در حال حاضر امکان دریافت هدیه پریمیوم را ندارد.'),
+            str_contains($l, 'invalid month') || str_contains($l, 'invalid duration') => new FragmentError('invalid_months', 'مدت اشتراک پریمیوم معتبر نیست.'),
             str_contains($l, 'too many') || str_contains($l, 'flood') => new FragmentError('rate_limit', 'Fragment موقتاً درخواست‌ها را محدود کرده است.', true),
             str_contains($l, 'access denied') => new FragmentError('session_expired', 'نشست Fragment نیازمند تمدید است.'),
             str_contains($l, 'bad request') => new FragmentError('bad_request', 'Fragment درخواست را نپذیرفت.', true),
@@ -410,8 +418,16 @@ final class FragmentLive
         $amount = self::amountParams($kind, $p);
         $pm = self::paymentMethod();
         return self::withSession($kind, function (array $page) use ($kind, $u, $amount, $pm) {
-            $f = self::find($page, $kind, $u, $amount);
-            self::pageState($page, $kind);
+            // Fragment's current Premium page requires its state to be
+            // initialised before recipient lookup. Stars remains on its
+            // established order because that flow is already stable.
+            if ($kind === 'premium') {
+                self::check(self::pageState($page, $kind));
+                $f = self::find($page, $kind, $u, $amount);
+            } else {
+                $f = self::find($page, $kind, $u, $amount);
+                self::check(self::pageState($page, $kind));
+            }
             $init = self::check(self::api($page, $kind === 'stars' ? 'initBuyStarsRequest' : 'initGiftPremiumRequest', ['recipient' => $f['recipient']] + $amount + ['payment_method' => $pm]));
             $reqId = (string) ($init['req_id'] ?? '');
             // فرگمنت مبلغ‌های بزرگ را با جداکننده‌ی هزارگان می‌فرستد (مثل «1,000.5»)

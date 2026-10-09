@@ -40,7 +40,7 @@ identityExpect(($otherKeyboard['keyboard'][0][0]['text'] ?? '') === 'انصرا�
 identityExpect(telegramProductsIdentityCancelRequested('انصراف'), 'Cancellation text is not accepted.');
 identityExpect(telegramProductsIdentityCancelRequested('/start'), 'Start command does not exit identity flow.');
 identityExpect(!telegramProductsIdentityCancelRequested('علی رضایی'), 'Valid input was treated as cancellation.');
-foreach (['name', 'contact', 'national', 'photo'] as $stage) {
+foreach (['contact', 'card', 'photo', 'name', 'national'] as $stage) {
     $from_id = '123';
     $datain = '';
     $text = 'انصراف';
@@ -82,4 +82,8 @@ identityExpect(str_contains($fragmentSource, 'telegramProductsIdentityGet($from_
 identityExpect(str_contains($identitySource, "if (\$match[1] !== 'start')"), 'Legacy user deletion callback is not denied.');
 identityExpect(substr_count($identitySource, "DELETE FROM telegram_product_identity") === 1, 'User-facing deletion path still exists.');
 identityExpect(str_contains($identitySource, "status<>'approved'"), 'Verified identity is not protected from user updates.');
+identityExpect(str_contains($source, 'identity_full_name_text') && str_contains($source, 'identity_national_id_text'), 'Customizable identity stage texts are missing.');
+identityExpect(str_contains($source, 'card_photo_file_id') && str_contains($identitySource, 'vsa_identity_carddoc_'), 'Bank-card identity evidence is missing.');
+identityExpect(str_contains($identitySource, 'مرحله ۳ از ۴') && str_contains($identitySource, 'مرحله ۴ از ۴'), 'Full name and national ID stages are missing.');
+identityExpect(str_contains($identitySource, "'protect_content' => 'true'"), 'Identity evidence is not protected when shown to administrators.');
 echo "virtual services identity tests: OK\n";
