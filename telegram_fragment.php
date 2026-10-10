@@ -105,6 +105,7 @@ function telegramFragmentEnsureSchema()
     // Migrate installations that created the orders table with an older
     // Fragment schema. The CREATE statement above does not alter that table.
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'product_id', 'BIGINT UNSIGNED NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'product_title', "VARCHAR(190) CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL DEFAULT ''");
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'updated_at', 'DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP ON UPDATE CURRENT_TIMESTAMP');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'base_price', 'BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER price');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'quote_ton', 'DECIMAL(20,9) NULL AFTER base_price');
@@ -115,6 +116,16 @@ function telegramFragmentEnsureSchema()
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'original_price', 'BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER price');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'discount_amount', 'BIGINT UNSIGNED NOT NULL DEFAULT 0 AFTER original_price');
     telegramFragmentEnsureColumn('telegram_fragment_orders', 'discount_code', 'VARCHAR(80) NULL AFTER discount_amount');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'wallet_debited', 'TINYINT(1) NOT NULL DEFAULT 0');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'wallet_refunded', 'TINYINT(1) NOT NULL DEFAULT 0');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'tx_hash', 'VARCHAR(190) NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'total_ton', 'DECIMAL(20,9) NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'attempt_count', 'INT UNSIGNED NOT NULL DEFAULT 0');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'next_attempt_at', 'DATETIME NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'last_error', 'TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'notified_status', 'VARCHAR(32) NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'paid_at', 'DATETIME NULL');
+    telegramFragmentEnsureColumn('telegram_fragment_orders', 'completed_at', 'DATETIME NULL');
     $pdo->exec('UPDATE telegram_fragment_orders SET original_price=price WHERE original_price=0');
 
     $insert = $pdo->prepare('INSERT IGNORE INTO telegram_fragment_settings (setting_key, setting_value) VALUES (?, ?)');
