@@ -295,7 +295,7 @@ function telegramProductsEnsureSchema()
             report VARCHAR(500) PRIMARY KEY NOT NULL,
             idreport TEXT CHARACTER SET utf8mb4 COLLATE utf8mb4_unicode_ci NOT NULL
         ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4 COLLATE=utf8mb4_unicode_ci");
-        $pdo->prepare("INSERT IGNORE INTO topicid (report, idreport) VALUES ('virtualservices', '0'), ('virtualservices_error', '0'), ('virtualservices_alerts', '0')")->execute();
+        $pdo->prepare("INSERT IGNORE INTO topicid (report, idreport) VALUES ('virtualservices', '0'), ('virtualservices_error', '0'), ('virtualservices_alerts', '0'), ('virtualservices_identity', '0')")->execute();
     } catch (Throwable $e) {
         error_log('Virtual services topic migration skipped: ' . $e->getMessage());
     }

@@ -8612,7 +8612,7 @@ if (preg_match('/^sendresidcart-(.*)/', $datain, $dataget)) {
     update("Payment_report", "payment_Status", "waiting", "id_order", $PaymentReport['id_order']);
     $dateacc = date('Y/m/d H:i:s');
     update("Payment_report", "at_updated", $dateacc, "id_order", $PaymentReport['id_order']);
-    $sentToReviewDestination = cardReceiptSendToReviewDestination($photoid, $caption, $textsendrasid, $Confirm_pay);
+    $sentToReviewDestination = cardReceiptSendToReviewDestination($photoid, $caption, $textsendrasid, $Confirm_pay, $PaymentReport['id_order']);
     if (!$sentToReviewDestination) {
         foreach ($admin_ids as $id_admin) {
             $adminrulecheck = select("admin", "*", "id_admin", $id_admin, "select");

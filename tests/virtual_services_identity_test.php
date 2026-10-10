@@ -77,8 +77,11 @@ $fragmentSource = file_get_contents(dirname(__DIR__) . '/telegram_fragment.php')
 $identitySource = file_get_contents(dirname(__DIR__) . '/telegram_products_identity.php');
 identityExpect(str_contains($source, 'telegramProductsIdentityGate($product)'), 'Product purchase does not check identity.');
 identityExpect(str_contains($source, 'telegramProductsIdentityGet($from_id, true)'), 'Payment does not lock the identity row.');
-identityExpect(str_contains($fragmentSource, "telegramProductsIdentityProduct('fg')"), 'Fragment purchases are not linked to virtual-services identity.');
+identityExpect(str_contains($fragmentSource, "telegramFragmentSetting('auth_mode', 'none')"), 'Fragment payment is not linked to virtual-services identity mode.');
 identityExpect(str_contains($fragmentSource, 'telegramProductsIdentityGet($from_id, true)'), 'Fragment payment does not lock the identity row.');
+identityExpect(!str_contains($fragmentSource, "telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))"), 'Fragment price is hidden behind identity verification.');
+identityExpect(str_contains($identitySource, "telegramProductsEnsureReportTopic('virtualservices_identity'"), 'Identity topic is not created in the main report group.');
+identityExpect(str_contains($identitySource, "'protect_content' => true"), 'Identity evidence is not protected in the report topic.');
 identityExpect(str_contains($identitySource, "if (\$match[1] !== 'start')"), 'Legacy user deletion callback is not denied.');
 identityExpect(substr_count($identitySource, "DELETE FROM telegram_product_identity") === 1, 'User-facing deletion path still exists.');
 identityExpect(str_contains($identitySource, "status<>'approved'"), 'Verified identity is not protected from user updates.');

@@ -1,6 +1,7 @@
 <?php
 require_once __DIR__ . '/vendor/autoload.php';
 require_once __DIR__ . '/config.php';
+require_once __DIR__ . '/cronbot/card_receipt_rules.php';
 ini_set('error_log', 'error_log');
 
 // Existing installations preserve config.php during updates. Keep the
@@ -588,6 +589,7 @@ function cardReceiptReviewCallbackChat($update, $callbackData)
 
 function cardReceiptMarkReviewedAtDestination($update, $callbackData, $statusText)
 {
+    global $pdo;
     if (!cardReceiptReviewCallbackChat($update, $callbackData)) return false;
     $message = $update['callback_query']['message'];
     $chatId = (string) $message['chat']['id'];
@@ -603,10 +605,60 @@ function cardReceiptMarkReviewedAtDestination($update, $callbackData, $statusTex
     telegram('sendMessage', $status);
     $callbackId = (string) ($update['callback_query']['id'] ?? '');
     if ($callbackId !== '') telegram('answerCallbackQuery', ['callback_query_id' => $callbackId]);
+    if (preg_match('/^(?:Confirm_pay|reject_pay|addbalamceuser)_(\w+)$/', (string) $callbackData, $match)) {
+        try {
+            cardReceiptReviewMessageStore($match[1]);
+            $pdo->prepare('DELETE FROM card_receipt_review_messages WHERE order_id=?')->execute([$match[1]]);
+        } catch (Throwable $e) {
+            error_log('Card receipt review tracking cleanup failed: ' . $e->getMessage());
+        }
+    }
     return true;
 }
 
-function cardReceiptSendToReviewDestination($photoId, $photoCaption, $reportText, $buttons)
+function cardReceiptReviewMessageStore($orderId, $chatId = null, $messageId = null, $threadId = null)
+{
+    global $pdo;
+    static $ready = false;
+    if (!$ready) {
+        $pdo->exec("CREATE TABLE IF NOT EXISTS card_receipt_review_messages (
+        order_id VARCHAR(64) PRIMARY KEY,
+        chat_id VARCHAR(32) NOT NULL,
+        message_id BIGINT UNSIGNED NOT NULL,
+        thread_id BIGINT UNSIGNED NULL
+    ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4");
+        $ready = true;
+    }
+    if ($chatId === null || $messageId === null) return;
+    $pdo->prepare('INSERT INTO card_receipt_review_messages (order_id, chat_id, message_id, thread_id) VALUES (?, ?, ?, ?) ON DUPLICATE KEY UPDATE chat_id=VALUES(chat_id), message_id=VALUES(message_id), thread_id=VALUES(thread_id)')
+        ->execute([(string) $orderId, (string) $chatId, (int) $messageId, $threadId === null ? null : (int) $threadId]);
+}
+
+function cardReceiptMarkAutoReviewedAtDestination($orderId)
+{
+    global $pdo;
+    try {
+        cardReceiptReviewMessageStore($orderId);
+        $stmt = $pdo->prepare('SELECT chat_id, message_id, thread_id FROM card_receipt_review_messages WHERE order_id=?');
+        $stmt->execute([(string) $orderId]);
+        $message = $stmt->fetch(PDO::FETCH_ASSOC);
+        if (!$message) return;
+        $response = telegram('editMessageReplyMarkup', [
+            'chat_id' => $message['chat_id'],
+            'message_id' => (int) $message['message_id'],
+        ]);
+        if (!empty($response['ok'])) {
+            $pdo->prepare('DELETE FROM card_receipt_review_messages WHERE order_id=?')->execute([(string) $orderId]);
+            $notice = ['chat_id' => $message['chat_id'], 'text' => 'رسید ' . $orderId . ' طبق تنظیم «تأیید بدون بررسی» به‌صورت خودکار تأیید شد.'];
+            if ((int) $message['thread_id'] > 0) $notice['message_thread_id'] = (int) $message['thread_id'];
+            telegram('sendMessage', $notice);
+        }
+    } catch (Throwable $e) {
+        error_log('Card receipt destination update failed: ' . $e->getMessage());
+    }
+}
+
+function cardReceiptSendToReviewDestination($photoId, $photoCaption, $reportText, $buttons, $orderId = null)
 {
     $target = cardReceiptReviewTarget();
     if ($target === null) return false;
@@ -623,7 +675,15 @@ function cardReceiptSendToReviewDestination($photoId, $photoCaption, $reportText
         'parse_mode' => 'HTML',
         'protect_content' => 'true',
     ]);
-    return !empty($report['ok']);
+    if (empty($report['ok'])) return false;
+    if ($orderId !== null && !empty($report['result']['message_id'])) {
+        try {
+            cardReceiptReviewMessageStore($orderId, $target['chat_id'], $report['result']['message_id'], $target['message_thread_id'] ?? null);
+        } catch (Throwable $e) {
+            error_log('Card receipt destination tracking failed: ' . $e->getMessage());
+        }
+    }
+    return true;
 }
 
 function generateUUID()

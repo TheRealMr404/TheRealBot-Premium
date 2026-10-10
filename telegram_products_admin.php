@@ -485,8 +485,8 @@ function virtualServicesAdminSettings()
     global $pdo;
 
     $enabled = telegramProductsSetting('enabled', '1') === '1';
-    $topics = $pdo->query("SELECT report, idreport FROM topicid WHERE report IN ('virtualservices', 'virtualservices_error', 'virtualservices_alerts')")->fetchAll(PDO::FETCH_KEY_PAIR);
-    $topicsReady = (int) ($topics['virtualservices'] ?? 0) > 0 && (int) ($topics['virtualservices_error'] ?? 0) > 0 && (int) ($topics['virtualservices_alerts'] ?? 0) > 0;
+    $topics = $pdo->query("SELECT report, idreport FROM topicid WHERE report IN ('virtualservices', 'virtualservices_error', 'virtualservices_alerts', 'virtualservices_identity')")->fetchAll(PDO::FETCH_KEY_PAIR);
+    $topicsReady = (int) ($topics['virtualservices'] ?? 0) > 0 && (int) ($topics['virtualservices_error'] ?? 0) > 0 && (int) ($topics['virtualservices_alerts'] ?? 0) > 0 && (int) ($topics['virtualservices_identity'] ?? 0) > 0;
     $text = "<b>متن‌ها و تنظیمات خدمات مجازی</b>\n\n";
     $text .= 'نام دکمه: ' . telegramProductsEscape(telegramProductsButtonText()) . "\n";
     $text .= 'وضعیت بخش: ' . ($enabled ? 'فعال' : 'غیرفعال') . "\n";
@@ -1369,8 +1369,9 @@ function telegramProductsAdminPanelHandleRequest()
             $salesTopic = telegramProductsEnsureReportTopic('virtualservices', 'خدمات مجازی', true);
             $errorTopic = telegramProductsEnsureReportTopic('virtualservices_error', 'خطاهای خدمات مجازی', true);
             $alertTopic = telegramProductsEnsureReportTopic('virtualservices_alerts', 'هشدارهای خدمات مجازی', true);
-            if ($salesTopic > 0 && $errorTopic > 0 && $alertTopic > 0) {
-                virtualServicesAdminReply('هر سه تاپیک فروش، خطا و هشدار با موفقیت ساخته شدند.', [[['text' => 'بازگشت', 'callback_data' => 'vsa_settings']]]);
+            $identityTopic = telegramProductsEnsureReportTopic('virtualservices_identity', 'احراز هویت خدمات مجازی', true);
+            if ($salesTopic > 0 && $errorTopic > 0 && $alertTopic > 0 && $identityTopic > 0) {
+                virtualServicesAdminReply('تاپیک‌های فروش، خطا، هشدار و احراز هویت آماده شدند.', [[['text' => 'بازگشت', 'callback_data' => 'vsa_settings']]]);
             } else {
                 virtualServicesAdminReply('ساخت تاپیک کامل نشد. گروه گزارش باید سوپرگروه انجمنی باشد و ربات دسترسی مدیریت تاپیک‌ها را داشته باشد.', [[['text' => 'بازگشت', 'callback_data' => 'vsa_settings']]]);
             }

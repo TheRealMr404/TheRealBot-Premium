@@ -61,7 +61,7 @@ function telegramProductsIdentityProduct($productId, $activeOnly = true)
         if (!function_exists('telegramFragmentSetting')) return null;
         return ['id' => 'fg', 'title' => 'استارز و پریمیوم خودکار', 'auth_mode' => telegramFragmentSetting('auth_mode', 'none'), 'is_active' => 1];
     }
-    $stmt = $pdo->prepare('SELECT id,title,auth_mode,is_active FROM telegram_products WHERE id=?');
+    $stmt = $pdo->prepare('SELECT id,title,price,auth_mode,is_active FROM telegram_products WHERE id=?');
     $stmt->execute([(int) $productId]);
     $product = $stmt->fetch(PDO::FETCH_ASSOC);
     return $product && (!$activeOnly || (int) $product['is_active'] === 1) ? $product : null;
@@ -143,6 +143,57 @@ function telegramProductsIdentityFinish($message)
     sendmessage($from_id, 'به منوی اصلی برگشتید.', $keyboard, 'HTML');
 }
 
+function telegramProductsIdentityReport($userId, $event, $productTitle = '')
+{
+    global $pdo, $setting;
+    try {
+        $groupId = (string) ($setting['Channel_Report'] ?? '');
+        if ($groupId === '' || $groupId === '0') return false;
+        $topicId = telegramProductsEnsureReportTopic('virtualservices_identity', 'احراز هویت خدمات مجازی');
+        if ($topicId <= 0) return false;
+        $identity = telegramProductsIdentityGet($userId);
+        if (!$identity) return false;
+        $stmt = $pdo->prepare('SELECT username FROM user WHERE id=?');
+        $stmt->execute([(string) $userId]);
+        $username = trim((string) $stmt->fetchColumn(), '@');
+        $username = preg_match('/^[a-zA-Z][a-zA-Z0-9_]{4,31}$/', $username) ? '@' . $username : 'ثبت نشده';
+        $status = ['none' => 'شماره تأیید شد', 'pending' => 'در انتظار بررسی', 'approved' => 'تأیید شد', 'rejected' => 'رد شد', 'deleted' => 'حذف توسط مدیر'][$event] ?? $event;
+        $text = "<b>احراز هویت خدمات مجازی</b>\n\n";
+        $text .= '<b>رویداد:</b> ' . telegramProductsEscape($status) . "\n";
+        if ($productTitle !== '') $text .= '<b>محصول:</b> ' . telegramProductsEscape($productTitle) . "\n";
+        $text .= '<b>نام و نام خانوادگی:</b> ' . telegramProductsEscape($identity['full_name'] ?: 'ثبت نشده') . "\n";
+        $text .= '<b>آیدی تلگرام:</b> ' . telegramProductsEscape($username) . "\n";
+        $text .= '<b>آیدی عددی:</b> <a href="tg://user?id=' . telegramProductsEscape($userId) . '">' . telegramProductsEscape($userId) . "</a>\n";
+        $text .= '<b>شماره تأییدشده:</b> <code>' . telegramProductsEscape($identity['phone'] ?? '') . "</code>\n";
+        if (!empty($identity['national_id_last4'])) $text .= '<b>چهار رقم آخر کد ملی:</b> <code>****' . telegramProductsEscape($identity['national_id_last4']) . "</code>\n";
+        if (!empty($identity['submitted_at'])) $text .= '<b>زمان ثبت:</b> ' . telegramProductsEscape($identity['submitted_at']) . "\n";
+        $target = ['chat_id' => $groupId, 'message_thread_id' => $topicId];
+        $result = telegram('sendMessage', $target + ['text' => $text, 'parse_mode' => 'HTML', 'protect_content' => true]);
+        if (empty($result['ok'])) {
+            $pdo->prepare("UPDATE topicid SET idreport='0' WHERE report='virtualservices_identity'")->execute();
+            return false;
+        }
+        $evidenceSent = true;
+        if ($event === 'pending') {
+            foreach ([['card_photo_file_id', 'card_photo_kind', 'عکس کارت بانکی'], ['document_file_id', 'document_kind', 'فرم تعهد و مدرک']] as [$fileField, $kindField, $label]) {
+                if (empty($identity[$fileField])) continue;
+                $isDocument = ($identity[$kindField] ?? '') === 'document';
+                $method = $isDocument ? 'sendDocument' : 'sendPhoto';
+                $field = $isDocument ? 'document' : 'photo';
+                $sent = telegram($method, $target + [$field => $identity[$fileField], 'caption' => $label . ' | کاربر ' . $userId, 'protect_content' => true]);
+                if (empty($sent['ok'])) {
+                    $evidenceSent = false;
+                    error_log('Identity evidence delivery failed: ' . $fileField . ' for user ' . $userId);
+                }
+            }
+        }
+        return $evidenceSent;
+    } catch (Throwable $e) {
+        error_log('Identity topic report failed: ' . $e->getMessage());
+        return false;
+    }
+}
+
 function telegramProductsIdentityCancel()
 {
     telegramProductsIdentityFinish('احراز هویت لغو شد. اطلاعات احراز ثبت‌شده شما محفوظ است.');
@@ -163,6 +214,7 @@ function telegramProductsIdentityStatus($product, $identity = null)
     }
     $text = "<b>احراز هویت خدمات مجازی</b>\n\n";
     $text .= '<b>پلن:</b> ' . telegramProductsEscape($product['title']) . "\n";
+    if (isset($product['price']) && (int) $product['price'] > 0) $text .= '<b>قیمت:</b> ' . telegramProductsMoney($product['price']) . "\n";
     $text .= '<b>نوع احراز:</b> ' . telegramProductsIdentityModeLabel($mode) . "\n";
     $text .= '<b>وضعیت:</b> ' . $status . "\n\n";
     $rows = [];
@@ -264,6 +316,7 @@ function telegramProductsIdentityHandleUser()
         }
         sendmessage($from_id, 'شماره شما تأیید شد.', json_encode(['remove_keyboard' => true]), 'HTML');
         if ($mode === 'phone') {
+            telegramProductsIdentityReport($from_id, 'none', $product['title']);
             telegramProductsIdentityClearStep();
             global $keyboard;
             sendmessage($from_id, 'منوی اصلی', $keyboard, 'HTML');
@@ -331,9 +384,10 @@ function telegramProductsIdentityHandleUser()
             return true;
         }
         telegramProductsIdentityFinish('درخواست احراز برای بررسی مدیر ثبت شد.');
+        $reported = telegramProductsIdentityReport($from_id, 'pending', $product['title']);
         global $admin_ids;
         $owner = array_values((array) $admin_ids)[0] ?? null;
-        if ($owner) sendmessage($owner, 'درخواست احراز هویت خدمات مجازی برای کاربر <code>' . telegramProductsEscape($from_id) . '</code> ثبت شد.', json_encode(['inline_keyboard' => [[['text' => 'بررسی درخواست', 'callback_data' => 'vsa_identity_view_' . $from_id]]]], JSON_UNESCAPED_UNICODE), 'HTML');
+        if (!$reported && $owner) sendmessage($owner, 'درخواست احراز هویت خدمات مجازی برای کاربر <code>' . telegramProductsEscape($from_id) . '</code> ثبت شد.', json_encode(['inline_keyboard' => [[['text' => 'بررسی درخواست', 'callback_data' => 'vsa_identity_view_' . $from_id]]]], JSON_UNESCAPED_UNICODE), 'HTML');
         telegramProductsIdentityStatus($product);
         return true;
     }
@@ -497,7 +551,10 @@ function telegramProductsIdentityHandleAdmin()
             $status = $m[1] === 'approveconfirm' ? 'approved' : 'rejected';
             $stmt = $pdo->prepare("UPDATE telegram_product_identity SET status=?,reviewed_at=NOW(),reviewer_id=? WHERE user_id=? AND status='pending' AND phone_verified_at IS NOT NULL AND full_name IS NOT NULL AND national_id_last4 IS NOT NULL AND document_file_id IS NOT NULL");
             $stmt->execute([$status, (string) $from_id, $m[2]]);
-            if ($stmt->rowCount() === 1) sendmessage($m[2], $status === 'approved' ? 'احراز هویت خدمات مجازی شما تأیید شد. اکنون می‌توانید خرید را ادامه دهید.' : 'درخواست احراز هویت شما تأیید نشد. اطلاعات را بررسی و دوباره ثبت کنید.', null, 'HTML');
+            if ($stmt->rowCount() === 1) {
+                sendmessage($m[2], $status === 'approved' ? 'احراز هویت خدمات مجازی شما تأیید شد. اکنون می‌توانید خرید را ادامه دهید.' : 'درخواست احراز هویت شما تأیید نشد. اطلاعات را بررسی و دوباره ثبت کنید.', null, 'HTML');
+                telegramProductsIdentityReport($m[2], $status);
+            }
         }
         telegramProductsIdentityAdminList();
         return true;

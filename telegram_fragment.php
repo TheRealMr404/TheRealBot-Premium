@@ -667,7 +667,6 @@ function telegramFragmentShowRecipientPrompt($productId = null, $notice = '')
             telegramProductsReply('پلن انتخاب‌شده دیگر در دسترس نیست.', null);
             return false;
         }
-        if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return false;
         step('tgp_fg_recipient_' . $product['id'], $from_id);
         $user['step'] = 'tgp_fg_recipient_' . $product['id'];
         $selfCallback = 'tgp_fg_self_' . $product['id'];
@@ -783,7 +782,6 @@ function telegramFragmentCreateDraft($productId, $recipient, $customAmount = nul
         telegramProductsReply('پلن انتخاب‌شده دیگر در دسترس نیست.', null);
         return false;
     }
-    if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return false;
     $recipient = telegramFragmentNormalizeRecipient($recipient);
     if ($recipient === '') {
         telegramProductsReply("<b>نام کاربری معتبر نیست</b>\n\nیوزرنیم را بدون @ یا به‌شکل <code>@username</code> و <code>t.me/username</code> ارسال کنید.", null);
@@ -1131,7 +1129,6 @@ function telegramFragmentHandleUserRequestInner()
     if (preg_match('/^tgp_fg_kind_(stars|premium)$/', $datain, $m)) { telegramFragmentShowProducts($m[1]); return true; }
     if ($datain === 'tgp_fg_custom_stars') {
         if (telegramFragmentSetting('stars_custom_enabled', '1') !== '1') { telegramFragmentShowProducts('stars'); return true; }
-        if (!telegramProductsIdentityGate(telegramProductsIdentityProduct('fg'))) return true;
         [$min, $max] = telegramFragmentCustomStarsBounds();
         step('tgp_fg_custom_amount', $from_id);
         $user['step'] = 'tgp_fg_custom_amount';
@@ -2128,4 +2125,3 @@ function telegramFragmentAdminHandleRequest()
     }
     return true;
 }
-

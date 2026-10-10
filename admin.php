@@ -3818,6 +3818,14 @@ $caption";
         }
         return;
     }
+    if (in_array($Payment_report['Payment_Method'], ['cart to cart', 'arze digital offline'], true)) {
+        $claim = $pdo->prepare("UPDATE Payment_report SET payment_Status='paid' WHERE id_order=? AND payment_Status='waiting'");
+        $claim->execute([$order_id]);
+        if ($claim->rowCount() !== 1) {
+            telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'این رسید قبلاً بررسی شده است.', 'show_alert' => true]);
+            return;
+        }
+    }
     DirectPayment($order_id);
     $pricecashback = select("PaySetting", "ValuePay", "NamePay", "chashbackcart", "select")['ValuePay'];
     $Balance_id = select("user", "*", "id", $Payment_report['id_user'], "select");
@@ -3875,7 +3883,16 @@ $caption";
         ));
         return;
     }
-    update("Payment_report", "payment_Status", "reject", "id_order", $id_order);
+    if (in_array($Payment_report['Payment_Method'], ['cart to cart', 'arze digital offline'], true)) {
+        $claim = $pdo->prepare("UPDATE Payment_report SET payment_Status='reject' WHERE id_order=? AND payment_Status='waiting'");
+        $claim->execute([$id_order]);
+        if ($claim->rowCount() !== 1) {
+            telegram('answerCallbackQuery', ['callback_query_id' => $callback_query_id, 'text' => 'این رسید قبلاً بررسی شده است.', 'show_alert' => true]);
+            return;
+        }
+    } else {
+        update("Payment_report", "payment_Status", "reject", "id_order", $id_order);
+    }
     $reviewedAtDestination = cardReceiptMarkReviewedAtDestination($update, $datain, '❌ رسید ' . $id_order . ' توسط مدیر ' . $from_id . ' رد شد؛ دلیل برای کاربر ارسال می‌شود.');
 
     sendmessage($from_id, $textbotlang['Admin']['Payment']['Reasonrejecting'], $backadmin, 'HTML');

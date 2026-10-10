@@ -16,7 +16,6 @@ $PaySetting = select("PaySetting","ValuePay","NamePay",'statuscardautoconfirm',"
 $paymentverify = select("PaySetting","ValuePay","NamePay","autoconfirmcart","select")['ValuePay'];
 if($PaySetting == "onautoconfirm")return;
 if($paymentverify == "offauto")return;
-$manualReview = cardReceiptReviewMode() !== 'admins';
     $datatxtbot = array();
 foreach ($datatextbotget as $row) {
     $datatxtbot[] = array(
@@ -38,24 +37,16 @@ foreach ($datatxtbot as $item) {
 $stmt = $pdo->prepare("SELECT * FROM Payment_report WHERE payment_Status = 'waiting' AND (Payment_Method = 'cart to cart' OR Payment_Method = 'arze digital offline') AND bottype IS NULL");
 $stmt->execute();
 while ($row = $stmt->fetch(PDO::FETCH_ASSOC)) {
-    if ($manualReview && $row['Payment_Method'] === 'cart to cart') continue;
-    $timecheck = $setting['timeauto_not_verify']*60;
-    if($row['at_updated'] == null)continue;
-    $since_start = time() - strtotime($row['at_updated']);
-    if ($since_start >=3600)continue;
-    if ($since_start <= $timecheck)continue;
     $Payment_report = $row;
     $list_Exceptions = select("PaySetting","ValuePay","NamePay","Exception_auto_cart","select")['ValuePay'];
     $list_Exceptions = is_string($list_Exceptions) ? json_decode($list_Exceptions,true) : [];
-    $Balance_id = select("user","*","id",$Payment_report['id_user'],"select");
-    if(in_array($Balance_id['id'],$list_Exceptions))continue;
+    if (!cardReceiptAutoConfirmEligible($Payment_report, time(), $setting['timeauto_not_verify'], $list_Exceptions)) continue;
     $textbotlang =languagechange('../text.json');
-    if ($Payment_report['payment_Status'] == "paid") {
-        continue;
-    }
-        update("Payment_report","payment_Status","paid","id_order",$Payment_report['id_order']);
-        update("Payment_report","dec_not_confirmed","تایید توسط ربات بدون بررسی","id_order",$Payment_report['id_order']);
+        $claim = $pdo->prepare("UPDATE Payment_report SET payment_Status='paid', dec_not_confirmed='تایید توسط ربات بدون بررسی' WHERE id_order=? AND payment_Status='waiting'");
+        $claim->execute([$Payment_report['id_order']]);
+        if ($claim->rowCount() !== 1) continue;
         DirectPayment($Payment_report['id_order'],"../images.jpg");
+        cardReceiptMarkAutoReviewedAtDestination($Payment_report['id_order']);
         $pricecashback = select("PaySetting", "ValuePay", "NamePay", "chashbackcart","select")['ValuePay'];
     $Balance_id = select("user","*","id",$Payment_report['id_user'],"select");
     if($pricecashback != "0"){
