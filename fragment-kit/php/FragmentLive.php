@@ -9,7 +9,7 @@ declare(strict_types=1);
  * (github.com/bohd4nx/pyfragment، MIT) مقایسه و هم‌راستا شده است:
  *   ۱. نشست: کوکی‌های stel_ssid / stel_dt / stel_token / stel_ton_token (از مرورگری که با همان ولت وارد فرگمنت شده؛ پنل ← راه‌اندازی)
  *      یا ورود خودکار با ولت (TON Connect ton_proof ← checkTonProofAuth)
- *   ۲. searchStarsRecipient (quantity خالی) / searchPremiumGiftRecipient (months)
+ *   ۲. searchStarsRecipient (query) / searchPremiumGiftRecipient (query و months)
  *   ۳. updateStarsBuyState / updatePremiumState (mode=new) ← initBuyStarsRequest / initGiftPremiumRequest (قیمت، payment_method)
  *   ۴. getBuyStarsLink / getGiftPremiumLink ← پیام‌های تراکنش TON (account + device + transaction=1 + id + show_sender)
  *   ۵. امضا و ارسال تراکنش توسط «سرویس امضای TON» (tools/ton-signer)؛ کلید ولت فقط روی همان سرویس است
@@ -186,7 +186,7 @@ final class FragmentLive
     {
         $l = strtolower($e);
         $mapped = match (true) {
-            str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'not found') => new FragmentError('user_not_found', 'گیرنده پیدا نشد.'),
+            str_contains($l, 'no telegram users') || str_contains($l, 'assigned to a user') || str_contains($l, 'username assigned') || str_contains($l, 'recipient not found') || str_contains($l, 'username not found') => new FragmentError('user_not_found', 'گیرنده پیدا نشد.'),
             str_contains($l, 'already subscribed') || (str_contains($l, 'already') && str_contains($l, 'premium')) => new FragmentError('already_premium', 'این حساب هم‌اکنون پریمیوم دارد.'),
             str_contains($l, 'not eligible') || str_contains($l, 'cannot receive premium') || str_contains($l, "can't receive premium") || str_contains($l, 'cannot be gifted') || str_contains($l, "can't be gifted") || str_contains($l, "can't gift") || str_contains($l, 'cannot gift') => new FragmentError('premium_unavailable', 'این حساب در حال حاضر امکان دریافت هدیه پریمیوم را ندارد.'),
             str_contains($l, 'invalid month') || str_contains($l, 'invalid duration') => new FragmentError('invalid_months', 'مدت اشتراک پریمیوم معتبر نیست.'),
@@ -391,13 +391,20 @@ final class FragmentLive
         return ['months' => $months];
     }
 
-    /** جست‌وجوی گیرنده؛ برای استارز مثل مرورگر quantity خالی فرستاده می‌شود */
+    /** جست‌وجوی گیرنده؛ quantity فقط در مرحله‌ی قیمت‌گیری استارز لازم است. */
     private static function find(array $page, string $kind, string $username, array $amount): array
     {
-        $params = ['query' => $username] + ($kind === 'stars' ? ['quantity' => ''] : ['months' => $amount['months']]);
+        $params = ['query' => $username] + ($kind === 'stars' ? [] : ['months' => $amount['months']]);
         $r = self::check(self::api($page, $kind === 'stars' ? 'searchStarsRecipient' : 'searchPremiumGiftRecipient', $params));
         $f = $r['found'] ?? null;
-        if (!is_array($f) || empty($f['recipient'])) throw new FragmentError('user_not_found', 'گیرنده پیدا نشد.');
+        if ($f === false || ($f === null && array_key_exists('found', $r))) {
+            if (!self::page($kind)['loggedIn']) throw new FragmentError('session_expired', 'نشست Fragment منقضی شده است.');
+            throw new FragmentError('user_not_found', 'گیرنده پیدا نشد.');
+        }
+        if (!is_array($f) || empty($f['recipient'])) {
+            error_log('fragment recipient search returned an unexpected response: ' . implode(',', array_keys($r)));
+            throw new FragmentError('bad_response', 'پاسخ جست‌وجوی گیرنده از Fragment ناقص است.', true);
+        }
         return $f;
     }
 

@@ -502,6 +502,17 @@ if ($user['joinchannel'] != "active") {
 // legacy VPN command chain so unrelated states cannot consume these updates.
 $virtualServicesIncomingText = trim(telegramProductsPlainText((string) $text));
 $virtualServicesButtonText = trim(telegramProductsPlainText(telegramProductsButtonText()));
+if (preg_match('/^tgp_fg_(?:custom_recipient|recipient_\d+)$/', (string) ($user['step'] ?? ''))) {
+    $recipientExit = telegramFragmentRecipientExitKind($text, (string) $datain, $keyboard);
+    if ($recipientExit !== '') {
+        step('home', $from_id);
+        $user['step'] = 'home';
+        if ($recipientExit === 'cancel') {
+            sendmessage($from_id, 'درخواست خرید لغو شد.', $keyboard, 'HTML');
+            return;
+        }
+    }
+}
 $isVirtualServicesAdminRoute = in_array((string) $from_id, array_map('strval', (array) $admin_ids), true)
     && (
         in_array($virtualServicesIncomingText, ['🛍 خدمات مجازی', 'مدیریت خدمات مجازی'], true)

@@ -290,7 +290,7 @@ function telegramFragmentSafeReason($error)
     ];
     if (isset($reasons[$code])) return $reasons[$code];
     if (preg_match('/already.*premium|پریمیوم.*(فعال|دارد)/u', $message)) return $reasons['already_premium'];
-    if (preg_match('/not found|پیدا نشد|username|recipient|گیرنده/u', $message)) return $reasons['user_not_found'];
+    if (preg_match('/(?:user|username|recipient).*not found|no telegram users|گیرنده پیدا نشد/u', $message)) return $reasons['user_not_found'];
     if (preg_match('/موجودی|balance|insufficient/u', $message)) return 'موجودی کیف پول پرداخت برای این سفارش کافی نیست.';
     if (preg_match('/سقف|limit|محدود/u', $message)) return 'یکی از محدودیت‌های ایمنی خرید تکمیل شده است.';
     if (preg_match('/سرویس.*(پردازش|امضا)|signer/u', $message)) return 'سرویس پردازش تراکنش موقتاً در دسترس نیست.';
@@ -610,6 +610,23 @@ function telegramFragmentNormalizeRecipient($value)
     $value = strtolower($value);
     if (in_array($value, ['', 'none', 'not_username', 'null', 'undefined'], true)) return '';
     return preg_match('/^[a-z][a-z0-9_]{4,31}$/', $value) ? $value : '';
+}
+
+function telegramFragmentRecipientExitKind($text, $callbackData, $keyboard)
+{
+    if ($callbackData !== '' && strpos((string) $callbackData, 'tgp_fg_') !== 0) return 'menu';
+    $plain = telegramProductsPlainText((string) $text);
+    if (in_array($plain, ['انصراف', 'بازگشت', 'لغو', '/cancel'], true)) return 'cancel';
+    if (preg_match('/^\/(?:start|tg_\w+)(?:@\w+)?(?:\s|$)/i', $plain)) return 'menu';
+    $layout = json_decode((string) $keyboard, true);
+    foreach (['keyboard', 'inline_keyboard'] as $type) {
+        foreach (($layout[$type] ?? []) as $row) {
+            foreach ((array) $row as $button) {
+                if (isset($button['text']) && $plain === telegramProductsPlainText($button['text'])) return 'menu';
+            }
+        }
+    }
+    return '';
 }
 
 function telegramFragmentCurrentUsername()
@@ -1087,7 +1104,6 @@ function telegramFragmentHandleUserRequestInner()
         return true;
     }
     if ($datain === '' && preg_match('/^tgp_fg_recipient_(\d+)$/', $state, $match)) {
-        // نام کاربری نامعتبر: کاربر در همان مرحله می‌ماند تا دوباره بفرستد
         if (telegramFragmentCreateDraft($match[1], $text) !== false) {
             step('home', $from_id);
             $user['step'] = 'home';
@@ -1120,9 +1136,10 @@ function telegramFragmentHandleUserRequestInner()
         }
         return true;
     }
-    if ($datain !== '' && preg_match('/^tgp_fg_recipient_\d+$/', $state)) {
+    if ($datain !== '' && ($state === 'tgp_fg_custom_recipient' || preg_match('/^tgp_fg_recipient_\d+$/', $state)) && !preg_match('/^tgp_fg_self_(?:custom|\d+)$/', $datain)) {
         step('home', $from_id);
         $user['step'] = 'home';
+        if ($state === 'tgp_fg_custom_recipient') telegramFragmentSetUserPayload([]);
     }
     if ($datain === 'tgp_fg_home') { telegramFragmentShowHome(); return true; }
     if ($datain === 'tgp_fg_orders') { telegramFragmentShowOrders(); return true; }
